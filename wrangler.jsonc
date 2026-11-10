@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "event-extractor",
+  "main": "src/index.js",
+  "compatibility_date": "2025-10-01",
+  "observability": { "enabled": true },
+  "workers_dev": true,
+  "routes": [{ "pattern": "api.aicalendar.com.tr", "custom_domain": true }],
+  "ai": { "binding": "AI" },
+  "vars": {
+    "TEXT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "VISION_MODEL": "@cf/meta/llama-3.2-11b-vision-instruct",
+    "MAX_IMAGES": "3"
+  }
+}
