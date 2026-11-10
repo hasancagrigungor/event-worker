@@ -4,21 +4,21 @@ Instagram postu, tweet, LinkedIn gönderisi veya herhangi bir web sayfası linki
 
 Link verirsiniz, şu yapıda JSON alırsınız: **isim, açıklama, tarih, saat, konum**.
 
-- Canlı API: `https://event-extractor.hasancagrigungor.workers.dev`
-- Özel alan adı: `https://api.aicalendar.com.tr` (DNS yayılması tamamlanınca)
+- Canlı API: `https://api.aicalendar.com.tr`
+- Yedek adres: `https://event-extractor.hasancagrigungor.workers.dev`
 
 ## Kullanım
 
 ### GET
 
 ```bash
-curl "https://event-extractor.hasancagrigungor.workers.dev/?url=https://www.instagram.com/p/DfWxgrrC_Ll/"
+curl "https://api.aicalendar.com.tr/?url=https://www.instagram.com/p/DfWxgrrC_Ll/"
 ```
 
 ### POST
 
 ```bash
-curl -X POST https://event-extractor.hasancagrigungor.workers.dev/ \
+curl -X POST https://api.aicalendar.com.tr/ \
   -H "content-type: application/json" \
   -d '{"url":"https://x.com/biletinial/status/1913358125803180316"}'
 ```
@@ -26,7 +26,7 @@ curl -X POST https://event-extractor.hasancagrigungor.workers.dev/ \
 ### JavaScript
 
 ```js
-const res = await fetch("https://event-extractor.hasancagrigungor.workers.dev/", {
+const res = await fetch("https://api.aicalendar.com.tr/", {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ url: "https://www.linkedin.com/posts/..." }),
