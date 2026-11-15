@@ -541,6 +541,7 @@ async function classifyEvent(env, { source, content, imageNotes }) {
 
   try {
     const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+      ...classifierExtra(env),
       state: { kaynak: source, yayin_tarihi: content.publishedAt || null, bugun: new Date().toISOString().slice(0, 10), icerik: text },
       questions: {
         etkinlik: {
@@ -622,6 +623,7 @@ async function prefilterText(env, source, content) {
   if (text.length < PREFILTER_MIN_TEXT) return { yapilmadi: "metin çok kısa", elendi: false };
   try {
     const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+      ...classifierExtra(env),
       state: { kaynak: source, bugun: new Date().toISOString().slice(0, 10), icerik: text.slice(0, 6000) },
       questions: {
         etkinlik: {
@@ -653,6 +655,7 @@ async function classifyUrls(env, urls) {
     if (!env.CLASSIFIER_MODEL) return { url, olasilik: null, etkinlik_mi: null, hata: "CLASSIFIER_MODEL tanımlı değil" };
     try {
       const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+      ...classifierExtra(env),
         state: { url },
         questions: {
           etkinlik_sayfasi: {
@@ -688,6 +691,12 @@ async function classifyUrls(env, urls) {
 }
 
 /* ---------------- yardımcılar ---------------- */
+
+/** Sınıflandırıcıya özel ek alanlar: Cloudflare clef modelleri `model` seçicisi ister, Jev istemez */
+function classifierExtra(env) {
+  const m = /^@cf\/cloudflare\/(clef(?:-flash)?)$/.exec(env.CLASSIFIER_MODEL || "");
+  return m ? { model: m[1] } : {};
+}
 
 /** Eski Workers AI formatı (response alanı) kullanan modeller */
 function isLegacyModel(model) {

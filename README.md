@@ -35,7 +35,7 @@ curl -X POST https://api.aicalendar.com.tr/ \
 
 ### Link sınıflandırma (`/classify`)
 
-Sayfaları açmadan, sadece adreslerine bakarak hangi linklerin tek bir etkinliğin sayfası olduğunu Jev'e sorar. Sitemap'lerdeki çok sayıda linki okumadan önce elemek için kullanılır. İstek başına en fazla 100 link.
+Sayfaları açmadan, sadece adreslerine bakarak hangi linklerin tek bir etkinliğin sayfası olduğunu sınıflandırıcıya sorar. Sitemap'lerdeki çok sayıda linki okumadan önce elemek için kullanılır. İstek başına en fazla 100 link.
 
 ```bash
 curl -X POST https://api.aicalendar.com.tr/classify \
@@ -50,7 +50,7 @@ curl -X POST https://api.aicalendar.com.tr/classify \
 ] }
 ```
 
-Jev hata verirse `olasilik` ve `etkinlik_mi` değeri `null` olur, `hata` alanında sebep yazar.
+Sınıflandırıcı hata verirse `olasilik` ve `etkinlik_mi` değeri `null` olur, `hata` alanında sebep yazar.
 
 ### JavaScript
 
@@ -97,11 +97,11 @@ console.log(event.isim, event.tarih, event.saat, event.konum);
 | `etkinlik_mi`    | İçerik gerçekten bir etkinlik duyurusu mu |
 | `kaynak`         | `instagram`, `twitter`, `linkedin` veya `web` |
 | `taranan_gorsel` | Vision modeliyle taranan görsel sayısı |
-| `kategori`       | Jev: `conference`, `summit`, `meetup`, `hackathon`, `workshop`, `webinar` veya `null` |
-| `format`         | Jev: `in-person`, `online`, `hybrid` veya `null` |
-| `ucretsiz`       | Jev: ücretsizse `true`, ücretliyse `false`, emin değilse `null` |
-| `turkiye_mi`     | Jev: Türkiye'deyse veya Türkçe online etkinlikse `true`, emin değilse `null` |
-| `siniflandirma`  | Jev'in olasılıkları, model adı veya hata |
+| `kategori`       | Sınıflandırıcı: `conference`, `summit`, `meetup`, `hackathon`, `workshop`, `webinar` veya `null` |
+| `format`         | Sınıflandırıcı: `in-person`, `online`, `hybrid` veya `null` |
+| `ucretsiz`       | Sınıflandırıcı: ücretsizse `true`, ücretliyse `false`, emin değilse `null` |
+| `turkiye_mi`     | Sınıflandırıcı: Türkiye'deyse veya Türkçe online etkinlikse `true`, emin değilse `null` |
+| `siniflandirma`  | Sınıflandırıcının olasılıkları, model adı veya hata |
 | `on_eleme`       | Ön elemenin sonucu: `olasilik`, `elendi`, varsa `hata` |
 | `ham`            | Debug: çekilen metin, görsellerden okunan notlar, yayın tarihi |
 
@@ -131,8 +131,8 @@ Akış:
 1. Linkin kaynağı tespit edilir, metin ve görsel URL'leri toplanır.
 2. Sosyal medya kaynaklarında her görsel vision modeline gönderilir; model yalnızca görselde yazan metni aktarır (OCR).
 3. Metin + görsel notları, JSON şema zorunlu bir metin modeline verilir ve yapılandırılmış sonuç alınır.
-2a. **Ön eleme:** Görsel tarama ve Gemma'dan önce metin Jev'e sorulur. Etkinlik olasılığı 0,2'nin altındaysa istek orada biter (`etkinlik_mi: false`, `on_eleme.elendi: true`). Metin 40 karakterden kısaysa veya Jev hata verirse ön eleme yapılmaz. `"prefilter": false` ile kapatılabilir.
-4. Aynı anda Jev sınıflandırma modeline etkinlik mi, kategori, format, ücretsiz mi ve Türkiye'de mi soruları sorulur. Jev etkinlik olasılığını 0,35'in altında verirse `etkinlik_mi` false olur.
+2a. **Ön eleme:** Görsel tarama ve Gemma'dan önce metin sınıflandırıcıya sorulur. Etkinlik olasılığı 0,2'nin altındaysa istek orada biter (`etkinlik_mi: false`, `on_eleme.elendi: true`). Metin 40 karakterden kısaysa veya sınıflandırıcı hata verirse ön eleme yapılmaz. `"prefilter": false` ile kapatılabilir.
+4. Aynı anda sınıflandırıcıya etkinlik mi, kategori, format, ücretsiz mi ve Türkiye'de mi soruları sorulur. Etkinlik olasılığı 0,35'in altındaysa `etkinlik_mi` false olur.
 
 Modeller (`wrangler.jsonc` > `vars`):
 
@@ -140,7 +140,7 @@ Modeller (`wrangler.jsonc` > `vars`):
 |----------------|------------|-----|
 | `TEXT_MODEL`   | `@cf/google/gemma-4-26b-a4b-it` | Bilgi çıkarma. JSON şema destekler, düşünme modu kapalı çalıştırılır. |
 | `VISION_MODEL` | `@cf/google/gemma-4-26b-a4b-it` | Afiş okuma. Aynı Gemma 4 modeli. |
-| `CLASSIFIER_MODEL` | `typesafe/jev` | Olasılıklı sınıflandırma. Boş bırakılırsa atlanır. |
+| `CLASSIFIER_MODEL` | `@cf/cloudflare/clef-flash` | Olasılıklı sınıflandırma ve ön eleme. Cloudflare'ın kendi modeli, ek kredi istemez. `typesafe/jev` de aynı formatla çalışır. Boş bırakılırsa atlanır. |
 | `MAX_IMAGES`   | `3` | Gönderi başına taranacak en fazla görsel |
 
 ## Kurulum
@@ -154,9 +154,9 @@ npm run deploy
 
 `wrangler.jsonc` içindeki `routes` satırı özel alan adı içindir; kendi hesabınızda kullanacaksanız silin veya kendi alan adınızla değiştirin.
 
-### Jev için AI Gateway kredisi
+### Jev kullanmak isterseniz (AI Gateway kredisi)
 
-`typesafe/jev` üçüncü taraf bir modeldir ve Cloudflare hesabındaki AI Gateway kredisiyle ücretlendirilir. Kredi yoksa Jev `2021: Insufficient AI Gateway credits` hatası verir. Worker bu durumda sınıflandırmayı atlar ve Gemma'nın sonucunu döndürür. Hata `siniflandirma.hata` alanında görünür. Kredi Cloudflare panelinde AI > AI Gateway bölümünden yüklenir.
+Varsayılan sınıflandırıcı `@cf/cloudflare/clef-flash`'tır; Workers AI planı içinde ücretlendirilir (1M girdi token'ı 0,038 $, çıktı ücretsiz). `typesafe/jev` aynı soru formatını kullanır ama üçüncü taraf bir modeldir ve Cloudflare hesabındaki AI Gateway kredisiyle ücretlendirilir. Kredi yoksa Jev `2021: Insufficient AI Gateway credits` hatası verir. Worker bu durumda sınıflandırmayı atlar ve Gemma'nın sonucunu döndürür. Hata `siniflandirma.hata` alanında görünür. Kredi Cloudflare panelinde AI > AI Gateway bölümünden yüklenir.
 
 ### Llama 3.2 Vision lisans onayı (eski model)
 
