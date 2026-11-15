@@ -51,10 +51,19 @@ export default {
     }
 
     let target = reqUrl.searchParams.get("url");
+    let provided = null; // POST ile metin/görsel hazır gönderildiyse sayfa tekrar çekilmez
     if (request.method === "POST") {
       try {
         const body = await request.json();
         target = body?.url || target;
+        if (typeof body?.text === "string" && body.text.trim()) {
+          provided = {
+            text: body.text,
+            images: Array.isArray(body.images) ? body.images.filter((x) => typeof x === "string") : [],
+            publishedAt: body.publishedAt || null,
+            author: body.author || undefined,
+          };
+        }
       } catch {
         /* ignore */
       }
@@ -77,7 +86,8 @@ export default {
     try {
       const source = detectSource(target);
       let content;
-      if (source === "instagram") content = await fetchInstagram(target);
+      if (provided) content = provided;
+      else if (source === "instagram") content = await fetchInstagram(target);
       else if (source === "twitter") content = await fetchTweet(target);
       else if (source === "linkedin") content = await fetchLinkedIn(target);
       else content = await fetchWebPage(target);

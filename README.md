@@ -23,6 +23,16 @@ curl -X POST https://api.aicalendar.com.tr/ \
   -d '{"url":"https://x.com/biletinial/status/1913358125803180316"}'
 ```
 
+### Metni hazır göndermek
+
+İçeriği zaten çektiyseniz (ör. Apify ile), metni ve görsel URL'lerini doğrudan gönderebilirsiniz. Bu durumda worker sayfayı tekrar çekmez, sadece görselleri tarar ve etkinliği çıkarır.
+
+```bash
+curl -X POST https://api.aicalendar.com.tr/ \
+  -H "content-type: application/json" \
+  -d '{"url":"https://www.instagram.com/p/XXXX/","text":"Post açıklaması...","images":["https://.../gorsel.jpg"],"publishedAt":"2026-11-10T12:00:00Z"}'
+```
+
 ### JavaScript
 
 ```js
