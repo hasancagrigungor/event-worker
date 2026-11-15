@@ -50,11 +50,27 @@ export default {
       if (key !== env.API_KEY) return json({ error: "unauthorized" }, 401);
     }
 
+    // Link listesi için hızlı ön eleme (sayfalar açılmaz, sadece adreslere bakılır)
+    if (reqUrl.pathname === "/classify") {
+      if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "geçersiz JSON" }, 400);
+      }
+      const urls = Array.isArray(body?.urls) ? body.urls.filter((u) => typeof u === "string").slice(0, 100) : [];
+      if (!urls.length) return json({ error: "urls listesi gerekli (en fazla 100)" }, 400);
+      return json({ sonuclar: await classifyUrls(env, urls) });
+    }
+
     let target = reqUrl.searchParams.get("url");
     let provided = null; // POST ile metin/görsel hazır gönderildiyse sayfa tekrar çekilmez
+    let skipPrefilter = reqUrl.searchParams.get("prefilter") === "0";
     if (request.method === "POST") {
       try {
         const body = await request.json();
+        if (body?.prefilter === false) skipPrefilter = true;
         target = body?.url || target;
         if (typeof body?.text === "string" && body.text.trim()) {
           provided = {
@@ -92,6 +108,30 @@ export default {
       else if (source === "linkedin") content = await fetchLinkedIn(target);
       else content = await fetchWebPage(target);
 
+      // Ön eleme: görsel tarama ve Gemma'dan önce, metne bakarak "etkinlik mi?" diye Jev'e sor.
+      // Metin çok kısaysa (ör. sadece emoji, bilgi görselde) ön eleme yapılmaz.
+      const onEleme = skipPrefilter ? null : await prefilterText(env, source, content);
+      if (onEleme?.elendi) {
+        return json({
+          isim: null,
+          aciklama: null,
+          tarih: null,
+          saat: null,
+          konum: null,
+          etkinlik_mi: false,
+          kategori: null,
+          format: null,
+          ucretsiz: null,
+          turkiye_mi: null,
+          on_eleme: onEleme,
+          siniflandirma: null,
+          kaynak: source,
+          url: target,
+          taranan_gorsel: 0,
+          ham: { metin: content.text?.slice(0, 2000) || "", gorsel_notlari: [], yayin_tarihi: content.publishedAt || null },
+        });
+      }
+
       const maxImages = Number(env.MAX_IMAGES || 3);
       const imageNotes = [];
       if (source !== "web") {
@@ -121,6 +161,7 @@ export default {
         format: cls?.format ?? null,
         ucretsiz: cls?.ucretsiz ?? null,
         turkiye_mi: cls?.turkiye_mi ?? null,
+        on_eleme: onEleme,
         siniflandirma: cls,
         kaynak: source,
         url: target,
@@ -563,6 +604,87 @@ async function classifyEvent(env, { source, content, imageNotes }) {
   } catch (e) {
     return { hata: e.message || String(e) };
   }
+}
+
+/* ---------------- Jev ön eleme ---------------- */
+
+// Ön elemede bu olasılığın altı elenir. Bilerek düşük: şüpheli içerik elenmez, Gemma'ya gider.
+const PREFILTER_THRESHOLD = 0.2;
+const PREFILTER_MIN_TEXT = 40;
+
+/**
+ * Metne bakarak hızlı "etkinlik duyurusu mu?" kontrolü.
+ * Döner: null (yapılmadı) | { olasilik, elendi, hata? }. Jev hata verirse elenmez (fail-open).
+ */
+async function prefilterText(env, source, content) {
+  if (!env.CLASSIFIER_MODEL) return null;
+  const text = (content.text || "").trim();
+  if (text.length < PREFILTER_MIN_TEXT) return { yapilmadi: "metin çok kısa", elendi: false };
+  try {
+    const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+      state: { kaynak: source, bugun: new Date().toISOString().slice(0, 10), icerik: text.slice(0, 6000) },
+      questions: {
+        etkinlik: {
+          type: "noul",
+          instructions:
+            "Does `icerik` announce or promote a specific event (conference, meetup, hackathon, datathon, workshop, " +
+            "webinar, summit, bootcamp, talk, competition, concert, festival) that people can attend or register for?",
+          criteria: {
+            true: "Announces or promotes a specific event people can attend or join",
+            false: "General content, opinion, news, job post, product ad, or recap without an attendable event",
+          },
+        },
+      },
+    });
+    const p = res?.answers?.etkinlik?.noul;
+    if (typeof p !== "number") return { hata: "Jev yanıtı okunamadı", elendi: false };
+    return { olasilik: p, elendi: p < PREFILTER_THRESHOLD };
+  } catch (e) {
+    return { hata: e.message || String(e), elendi: false };
+  }
+}
+
+/**
+ * Link listesini sadece adreslerine bakarak sınıflandırır (sayfalar açılmaz).
+ * Her link için { url, olasilik, etkinlik_mi } döner; Jev hata verirse olasilik=null, etkinlik_mi=null.
+ */
+async function classifyUrls(env, urls) {
+  const one = async (url) => {
+    if (!env.CLASSIFIER_MODEL) return { url, olasilik: null, etkinlik_mi: null, hata: "CLASSIFIER_MODEL tanımlı değil" };
+    try {
+      const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+        state: { url },
+        questions: {
+          etkinlik_sayfasi: {
+            type: "noul",
+            instructions:
+              "Judging only from `url` (domain and path words), is this page about ONE specific event " +
+              "(e.g. a conference, meetup, hackathon, workshop, webinar, summit, bootcamp or competition page)?",
+            criteria: {
+              true: "A detail page for a single specific event",
+              false: "A listing/category/tag page, blog post, news, job post, company, product, profile or other page",
+            },
+          },
+        },
+      });
+      const p = res?.answers?.etkinlik_sayfasi?.noul;
+      if (typeof p !== "number") return { url, olasilik: null, etkinlik_mi: null, hata: "Jev yanıtı okunamadı" };
+      return { url, olasilik: p, etkinlik_mi: p >= 0.5 };
+    } catch (e) {
+      return { url, olasilik: null, etkinlik_mi: null, hata: e.message || String(e) };
+    }
+  };
+  // Aynı anda en fazla 6 istek
+  const out = new Array(urls.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.min(6, urls.length) }, async () => {
+    while (i < urls.length) {
+      const k = i++;
+      out[k] = await one(urls[k]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 /* ---------------- yardımcılar ---------------- */

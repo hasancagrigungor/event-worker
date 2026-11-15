@@ -33,6 +33,25 @@ curl -X POST https://api.aicalendar.com.tr/ \
   -d '{"url":"https://www.instagram.com/p/XXXX/","text":"Post açıklaması...","images":["https://.../gorsel.jpg"],"publishedAt":"2026-11-10T12:00:00Z"}'
 ```
 
+### Link sınıflandırma (`/classify`)
+
+Sayfaları açmadan, sadece adreslerine bakarak hangi linklerin tek bir etkinliğin sayfası olduğunu Jev'e sorar. Sitemap'lerdeki çok sayıda linki okumadan önce elemek için kullanılır. İstek başına en fazla 100 link.
+
+```bash
+curl -X POST https://api.aicalendar.com.tr/classify \
+  -H "content-type: application/json" \
+  -d '{"urls":["https://coderspace.io/etkinlikler/data-science-ai-day/","https://coderspace.io/blog/python-nedir/"]}'
+```
+
+```json
+{ "sonuclar": [
+  { "url": "https://coderspace.io/etkinlikler/data-science-ai-day/", "olasilik": 0.94, "etkinlik_mi": true },
+  { "url": "https://coderspace.io/blog/python-nedir/", "olasilik": 0.03, "etkinlik_mi": false }
+] }
+```
+
+Jev hata verirse `olasilik` ve `etkinlik_mi` değeri `null` olur, `hata` alanında sebep yazar.
+
 ### JavaScript
 
 ```js
@@ -83,6 +102,7 @@ console.log(event.isim, event.tarih, event.saat, event.konum);
 | `ucretsiz`       | Jev: ücretsizse `true`, ücretliyse `false`, emin değilse `null` |
 | `turkiye_mi`     | Jev: Türkiye'deyse veya Türkçe online etkinlikse `true`, emin değilse `null` |
 | `siniflandirma`  | Jev'in olasılıkları, model adı veya hata |
+| `on_eleme`       | Ön elemenin sonucu: `olasilik`, `elendi`, varsa `hata` |
 | `ham`            | Debug: çekilen metin, görsellerden okunan notlar, yayın tarihi |
 
 Model bilmediği alanı uydurmaz, `null` bırakır. Görselden okunan bilgi yalnızca metinde olmayan alanları doldurmak için kullanılır; metin her zaman önceliklidir.
@@ -111,6 +131,7 @@ Akış:
 1. Linkin kaynağı tespit edilir, metin ve görsel URL'leri toplanır.
 2. Sosyal medya kaynaklarında her görsel vision modeline gönderilir; model yalnızca görselde yazan metni aktarır (OCR).
 3. Metin + görsel notları, JSON şema zorunlu bir metin modeline verilir ve yapılandırılmış sonuç alınır.
+2a. **Ön eleme:** Görsel tarama ve Gemma'dan önce metin Jev'e sorulur. Etkinlik olasılığı 0,2'nin altındaysa istek orada biter (`etkinlik_mi: false`, `on_eleme.elendi: true`). Metin 40 karakterden kısaysa veya Jev hata verirse ön eleme yapılmaz. `"prefilter": false` ile kapatılabilir.
 4. Aynı anda Jev sınıflandırma modeline etkinlik mi, kategori, format, ücretsiz mi ve Türkiye'de mi soruları sorulur. Jev etkinlik olasılığını 0,35'in altında verirse `etkinlik_mi` false olur.
 
 Modeller (`wrangler.jsonc` > `vars`):
