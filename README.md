@@ -50,6 +50,8 @@ curl -X POST https://api.aicalendar.com.tr/classify \
 ] }
 ```
 
+`"tur": "sitemap"` gönderilirse soru değişir: linkler sitemap dosyası kabul edilir ve "bu sitemap etkinlik sayfaları listeler mi?" diye sorulur. Örneğin `sitemap-events.xml` yüksek, `sitemap-jobs.xml` düşük puan alır.
+
 Sınıflandırıcı hata verirse `olasilik` ve `etkinlik_mi` değeri `null` olur, `hata` alanında sebep yazar.
 
 ### JavaScript
@@ -124,7 +126,7 @@ Sağlık kontrolü: `GET /health` → `{"ok": true}`
 | Instagram | embed sayfası caption + og:description         | Evet (ilk `MAX_IMAGES` görsel) |
 | Tweet     | Twitter syndication API, yedek fxtwitter       | Evet |
 | LinkedIn  | herkese açık gönderi metni + og meta           | Evet |
-| Web       | og meta + JSON-LD `Event` verisi + sayfa metni | Hayır (web sayfalarında detay zaten metinde olur) |
+| Web       | og meta + JSON-LD `Event` verisi + sayfa metni. Sayfa boş bir JavaScript iskeletiyse bağlantı önizleme kimliğiyle bir kez daha denenir; yine boşsa hata döner. | Hayır (web sayfalarında detay zaten metinde olur) |
 
 Akış:
 

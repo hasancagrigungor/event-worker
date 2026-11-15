@@ -61,7 +61,8 @@ export default {
       }
       const urls = Array.isArray(body?.urls) ? body.urls.filter((u) => typeof u === "string").slice(0, 100) : [];
       if (!urls.length) return json({ error: "urls listesi gerekli (en fazla 100)" }, 400);
-      return json({ sonuclar: await classifyUrls(env, urls) });
+      const kind = body?.tur === "sitemap" ? "sitemap" : "sayfa";
+      return json({ sonuclar: await classifyUrls(env, urls, kind) });
     }
 
     let target = reqUrl.searchParams.get("url");
@@ -346,9 +347,29 @@ async function fetchLinkedIn(url) {
 
 /* ---------------- Web sayfası ---------------- */
 
+// Sayfa metni bundan kısaysa ve JSON-LD etkinlik yoksa sayfa "boş JavaScript iskeleti" sayılır
+const THIN_PAGE_CHARS = 200;
+
 async function fetchWebPage(url) {
+  let page = await readWebPage(url, UA_BROWSER);
+  if (page.thin) {
+    // Tek sayfa uygulamaları (Vue/React) bağlantı önizleme botlarına hazır HTML sunar; bir kez öyle dene
+    try {
+      const alt = await readWebPage(url, UA_BOT);
+      if (!alt.thin || alt.length > page.length) page = alt;
+    } catch {
+      /* ilk sonuçla devam */
+    }
+  }
+  if (page.thin) {
+    throw new Error("Sayfa içeriği alınamadı (JavaScript ile yükleniyor olabilir)");
+  }
+  return { text: page.text, images: [], publishedAt: null };
+}
+
+async function readWebPage(url, ua) {
   const r = await fetch(url, {
-    headers: { "user-agent": UA_BROWSER, accept: "text/html,*/*;q=0.8", "accept-language": "tr-TR,tr;q=0.9,en;q=0.8" },
+    headers: { "user-agent": ua, accept: "text/html,*/*;q=0.8", "accept-language": "tr-TR,tr;q=0.9,en;q=0.8" },
     redirect: "follow",
   });
   if (!r.ok) throw new Error(`Sayfa alınamadı (${r.status})`);
@@ -372,7 +393,10 @@ async function fetchWebPage(url) {
   if (ld.length) parts.push(`JSON-LD Event verisi: ${JSON.stringify(ld).slice(0, 3000)}`);
   parts.push(`Sayfa metni:\n${body.slice(0, 6000)}`);
 
-  return { text: parts.join("\n\n"), images: [], publishedAt: null };
+  // Başlıkla aynı olan tek satırlık gövde (ör. "Let's share together | Kommunity") içerik sayılmaz
+  const meaningful = body.replace(og.title || "\u0000", "").replace(/\s+/g, " ").trim();
+  const thin = !ld.length && meaningful.length + (og.description || "").length < THIN_PAGE_CHARS;
+  return { text: parts.join("\n\n"), thin, length: meaningful.length + (ld.length ? 10000 : 0) };
 }
 
 function extractJsonLdEvents(html) {
@@ -650,25 +674,36 @@ async function prefilterText(env, source, content) {
  * Link listesini sadece adreslerine bakarak sınıflandırır (sayfalar açılmaz).
  * Her link için { url, olasilik, etkinlik_mi } döner; Jev hata verirse olasilik=null, etkinlik_mi=null.
  */
-async function classifyUrls(env, urls) {
+async function classifyUrls(env, urls, kind = "sayfa") {
+  const question =
+    kind === "sitemap"
+      ? {
+          type: "noul",
+          instructions:
+            "`url` is a sitemap file of a website. Judging from its name and path, is it likely to list pages of " +
+            "specific events (conferences, meetups, hackathons, workshops, webinars, bootcamps, competitions)?",
+          criteria: {
+            true: "Its name suggests events, activities, meetups, bootcamps, hackathons, programs or is a generic/unnamed sitemap",
+            false: "Clearly about something else: blog, jobs, users, companies, products, dictionary, static pages, tags",
+          },
+        }
+      : {
+          type: "noul",
+          instructions:
+            "Judging only from `url` (domain and path words), is this page about ONE specific event " +
+            "(e.g. a conference, meetup, hackathon, workshop, webinar, summit, bootcamp or competition page)?",
+          criteria: {
+            true: "A detail page for a single specific event",
+            false: "A listing/category/tag page, blog post, news, job post, company, product, profile or other page",
+          },
+        };
   const one = async (url) => {
     if (!env.CLASSIFIER_MODEL) return { url, olasilik: null, etkinlik_mi: null, hata: "CLASSIFIER_MODEL tanımlı değil" };
     try {
       const res = await env.AI.run(env.CLASSIFIER_MODEL, {
       ...classifierExtra(env),
         state: { url },
-        questions: {
-          etkinlik_sayfasi: {
-            type: "noul",
-            instructions:
-              "Judging only from `url` (domain and path words), is this page about ONE specific event " +
-              "(e.g. a conference, meetup, hackathon, workshop, webinar, summit, bootcamp or competition page)?",
-            criteria: {
-              true: "A detail page for a single specific event",
-              false: "A listing/category/tag page, blog post, news, job post, company, product, profile or other page",
-            },
-          },
-        },
+        questions: { etkinlik_sayfasi: question },
       });
       const p = res?.answers?.etkinlik_sayfasi?.noul;
       if (typeof p !== "number") return { url, olasilik: null, etkinlik_mi: null, hata: "Jev yanıtı okunamadı" };
