@@ -32,9 +32,13 @@ const EVENT_SCHEMA = {
     tarih: { type: ["string", "null"], description: "Etkinlik tarihi, YYYY-MM-DD formatında" },
     saat: { type: ["string", "null"], description: "Etkinlik başlangıç saati, HH:MM (24 saat) formatında" },
     konum: { type: ["string", "null"], description: "Mekan adı ve/veya şehir/adres" },
+    saat_dilimi: {
+      type: ["string", "null"],
+      description: "Saatin ait olduğu IANA saat dilimi, ör. Europe/Istanbul, Europe/London, America/New_York",
+    },
     etkinlik_mi: { type: "boolean", description: "İçerik gerçekten bir etkinlik duyurusu mu" },
   },
-  required: ["isim", "aciklama", "tarih", "saat", "konum", "etkinlik_mi"],
+  required: ["isim", "aciklama", "tarih", "saat", "konum", "saat_dilimi", "etkinlik_mi"],
 };
 
 export default {
@@ -486,6 +490,9 @@ async function extractEvent(env, { source, url, content, imageNotes }) {
     "Yıl belirtilmemişse içeriğin yayın tarihinden sonraki en yakın uygun yılı seç. " +
     "Birden fazla tarih varsa başlangıç tarihini ver. Açıklama Türkçe, 1-3 cümle olsun. " +
     "Konum alanına mekan adı ve şehir yaz. " +
+    "saat_dilimi alanına saatin ait olduğu IANA saat dilimini yaz: metinde açıkça belirtilmişse (ör. GMT+3, CET, EST, " +
+    "\"Türkiye saatiyle\") onu, yoksa etkinliğin şehrine/ülkesine göre (İstanbul -> Europe/Istanbul, Londra -> Europe/London). " +
+    "Online etkinlikte saat dilimi belirtilmemişse ve dil/kaynak bir ülkeyi işaret etmiyorsa null bırak. " +
     "ÖNEMLİ: İçerikte konser, tiyatro, söyleşi, festival, workshop, maç, sergi gibi gelecekte yapılacak bir etkinlik duyurusu yoksa " +
     "etkinlik_mi=false yap ve isim, tarih, saat, konum alanlarını null bırak; içeriğin yayın tarihini etkinlik tarihi olarak KULLANMA. " +
     "Görsellerden okunan notlar otomatik OCR çıktısıdır ve sık sık HATALI veya UYDURMA olur: içerik metni her zaman esastır. Metinde tarih/konum/isim varsa görsel notundaki farklı değerleri yok say. Görsel notunu SADECE metinde hiç geçmeyen bir alanı doldurmak için kullan ve ancak notta açıkça yazıyorsa. " +
@@ -542,6 +549,7 @@ async function extractEvent(env, { source, url, content, imageNotes }) {
     tarih: normalizeDate(clean(parsed.tarih)),
     saat: normalizeTime(clean(parsed.saat)),
     konum: clean(parsed.konum),
+    saat_dilimi: validTimeZone(clean(parsed.saat_dilimi)),
     etkinlik_mi: parsed.etkinlik_mi !== false,
   };
 }
@@ -731,6 +739,17 @@ async function classifyUrls(env, urls, kind = "sayfa") {
 function classifierExtra(env) {
   const m = /^@cf\/cloudflare\/(clef(?:-flash)?)$/.exec(env.CLASSIFIER_MODEL || "");
   return m ? { model: m[1] } : {};
+}
+
+/** Geçerli bir IANA saat dilimiyse döndürür, değilse null */
+function validTimeZone(tz) {
+  if (!tz) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return tz;
+  } catch {
+    return null;
+  }
 }
 
 /** Eski Workers AI formatı (response alanı) kullanan modeller */

@@ -96,6 +96,7 @@ console.log(event.isim, event.tarih, event.saat, event.konum);
 | `tarih`          | `YYYY-MM-DD`, bulunamazsa `null` |
 | `saat`           | `HH:MM` (24 saat), bulunamazsa `null` |
 | `konum`          | Mekan adı ve şehir |
+| `saat_dilimi`    | Saatin ait olduğu IANA saat dilimi, ör. `Europe/Istanbul`, `Europe/London`; bilinmiyorsa `null` |
 | `etkinlik_mi`    | İçerik gerçekten bir etkinlik duyurusu mu |
 | `kaynak`         | `instagram`, `twitter`, `linkedin` veya `web` |
 | `taranan_gorsel` | Vision modeliyle taranan görsel sayısı |
