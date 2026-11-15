@@ -105,7 +105,7 @@ console.log(event.isim, event.tarih, event.saat, event.konum);
 | `ucretsiz`       | Sınıflandırıcı: ücretsizse `true`, ücretliyse `false`, emin değilse `null` |
 | `turkiye_mi`     | Sınıflandırıcı: Türkiye'deyse veya Türkçe online etkinlikse `true`, emin değilse `null` |
 | `siniflandirma`  | Sınıflandırıcının olasılıkları, model adı veya hata |
-| `on_eleme`       | Ön elemenin sonucu: `olasilik`, `elendi`, varsa `hata` |
+| `on_eleme`       | Ön elemenin sonucu: `olasilik`, `elendi`, bakılan `gorsel` sayısı, varsa `hata` |
 | `ham`            | Debug: çekilen metin, görsellerden okunan notlar, yayın tarihi |
 
 Model bilmediği alanı uydurmaz, `null` bırakır. Görselden okunan bilgi yalnızca metinde olmayan alanları doldurmak için kullanılır; metin her zaman önceliklidir.
@@ -134,7 +134,7 @@ Akış:
 1. Linkin kaynağı tespit edilir, metin ve görsel URL'leri toplanır.
 2. Sosyal medya kaynaklarında her görsel vision modeline gönderilir; model yalnızca görselde yazan metni aktarır (OCR).
 3. Metin + görsel notları, JSON şema zorunlu bir metin modeline verilir ve yapılandırılmış sonuç alınır.
-2a. **Ön eleme:** Görsel tarama ve Gemma'dan önce metin sınıflandırıcıya sorulur. Etkinlik olasılığı 0,2'nin altındaysa istek orada biter (`etkinlik_mi: false`, `on_eleme.elendi: true`). Metin 40 karakterden kısaysa veya sınıflandırıcı hata verirse ön eleme yapılmaz. `"prefilter": false` ile kapatılabilir.
+2a. **Ön eleme:** OCR ve Gemma'dan önce metin ve postun ilk 2 görseli birlikte sınıflandırıcıya (clef-flash) sorulur. Böylece bilgisi sadece afişte olan postlar da doğru değerlendirilir; metni sadece emoji olan afişli postlar da elenebilir. Etkinlik olasılığı 0,2'nin altındaysa istek orada biter (`etkinlik_mi: false`, `on_eleme.elendi: true`). Ne yeterli metin ne görsel varsa veya sınıflandırıcı hata verirse ön eleme yapılmaz. Görseller bir kez indirilir, ön elemeyi geçen postta aynı görseller OCR'a verilir. `"prefilter": false` ile kapatılabilir.
 4. Aynı anda sınıflandırıcıya etkinlik mi, kategori, format, ücretsiz mi ve Türkiye'de mi soruları sorulur. Etkinlik olasılığı 0,35'in altındaysa `etkinlik_mi` false olur.
 
 Modeller (`wrangler.jsonc` > `vars`):

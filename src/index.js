@@ -113,9 +113,15 @@ export default {
       else if (source === "linkedin") content = await fetchLinkedIn(target);
       else content = await fetchWebPage(target);
 
-      // Ön eleme: görsel tarama ve Gemma'dan önce, metne bakarak "etkinlik mi?" diye Jev'e sor.
-      // Metin çok kısaysa (ör. sadece emoji, bilgi görselde) ön eleme yapılmaz.
-      const onEleme = skipPrefilter ? null : await prefilterText(env, source, content);
+      // Sosyal medya görsellerini bir kez indir; hem ön elemede hem OCR'da kullanılır
+      const maxImages = Number(env.MAX_IMAGES || 3);
+      const loaded =
+        source === "web"
+          ? []
+          : await Promise.all(content.images.slice(0, maxImages).map((u) => loadImage(u).catch((e) => ({ url: u, error: e.message }))));
+
+      // Ön eleme: OCR ve Gemma'dan önce, metin + ilk görsellere bakarak "etkinlik mi?" diye sor.
+      const onEleme = skipPrefilter ? null : await prefilterText(env, source, content, loaded);
       if (onEleme?.elendi) {
         return json({
           isim: null,
@@ -137,11 +143,11 @@ export default {
         });
       }
 
-      const maxImages = Number(env.MAX_IMAGES || 3);
       const imageNotes = [];
       if (source !== "web") {
-        for (const img of content.images.slice(0, maxImages)) {
+        for (const img of loaded) {
           try {
+            if (img.error) throw new Error(img.error);
             const note = await describeImage(env, img);
             if (note) imageNotes.push(note);
           } catch (e) {
@@ -432,12 +438,18 @@ function extractJsonLdEvents(html) {
 
 /* ---------------- AI ---------------- */
 
-async function describeImage(env, imageUrl) {
-  const r = await fetch(imageUrl, { headers: { "user-agent": UA_BROWSER } });
+/** Görseli indirir: { url, ct, buf, b64 } */
+async function loadImage(url) {
+  const r = await fetch(url, { headers: { "user-agent": UA_BROWSER } });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const buf = await r.arrayBuffer();
   if (buf.byteLength > 6 * 1024 * 1024) throw new Error("görsel çok büyük");
-  const ct = r.headers.get("content-type") || "image/jpeg";
+  const ct = (r.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+  return { url, ct, buf, b64: arrayBufferToBase64(buf) };
+}
+
+async function describeImage(env, img) {
+  const { buf, ct } = img;
   const prompt =
     "You are an OCR tool. Transcribe ONLY the text that is actually visible in this image, exactly as written, line by line. " +
     "Do not translate, do not interpret, do not guess, do not add anything that is not written in the image. " +
@@ -455,7 +467,7 @@ async function describeImage(env, imageUrl) {
     });
   } else {
     // Gemma 4, Llama 3.2 vision vb.: messages + data URL
-    const b64 = arrayBufferToBase64(buf);
+    const b64 = img.b64;
     res = await env.AI.run(env.VISION_MODEL, {
       messages: [
         {
@@ -644,24 +656,41 @@ async function classifyEvent(env, { source, content, imageNotes }) {
 // Ön elemede bu olasılığın altı elenir. Bilerek düşük: şüpheli içerik elenmez, Gemma'ya gider.
 const PREFILTER_THRESHOLD = 0.2;
 const PREFILTER_MIN_TEXT = 40;
+// clef-flash ön elemede en fazla bu kadar görsel (4 MiB'den küçük PNG/JPEG/WebP) görür
+const PREFILTER_MAX_IMAGES = 2;
+const CLEF_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 /**
  * Metne bakarak hızlı "etkinlik duyurusu mu?" kontrolü.
  * Döner: null (yapılmadı) | { olasilik, elendi, hata? }. Jev hata verirse elenmez (fail-open).
  */
-async function prefilterText(env, source, content) {
+async function prefilterText(env, source, content, loaded = []) {
   if (!env.CLASSIFIER_MODEL) return null;
   const text = (content.text || "").trim();
-  if (text.length < PREFILTER_MIN_TEXT) return { yapilmadi: "metin çok kısa", elendi: false };
+  // Görseller yalnızca clef modellerine gönderilebilir (Jev'de görsel beta)
+  const images = classifierExtra(env).model
+    ? loaded
+        .filter((i) => i && !i.error && CLEF_IMAGE_TYPES.includes(i.ct) && i.buf.byteLength <= 4 * 1024 * 1024)
+        .slice(0, PREFILTER_MAX_IMAGES)
+        .map((i) => `data:${i.ct};base64,${i.b64}`)
+    : [];
+  // Ne yeterli metin ne görsel varsa karar verilemez: elenmez
+  if (text.length < PREFILTER_MIN_TEXT && !images.length) return { yapilmadi: "metin çok kısa, görsel yok", elendi: false };
   try {
     const res = await env.AI.run(env.CLASSIFIER_MODEL, {
       ...classifierExtra(env),
-      state: { kaynak: source, bugun: new Date().toISOString().slice(0, 10), icerik: text.slice(0, 6000) },
+      ...(images.length ? { images } : {}),
+      state: {
+        kaynak: source,
+        bugun: new Date().toISOString().slice(0, 10),
+        icerik: text.slice(0, 6000) || "(metin yok, bilgi görselde)",
+        not: images.length ? "Görseller (afiş vb.) içeriğin parçasıdır; görseldeki yazıları da değerlendir." : undefined,
+      },
       questions: {
         etkinlik: {
           type: "noul",
           instructions:
-            "Does `icerik` announce or promote a specific event (conference, meetup, hackathon, datathon, workshop, " +
+            "Does this post (`icerik` and any attached images such as posters) announce or promote a specific event (conference, meetup, hackathon, datathon, workshop, " +
             "webinar, summit, bootcamp, talk, competition, concert, festival) that people can attend or register for?",
           criteria: {
             true: "Announces or promotes a specific event people can attend or join",
@@ -671,8 +700,8 @@ async function prefilterText(env, source, content) {
       },
     });
     const p = res?.answers?.etkinlik?.noul;
-    if (typeof p !== "number") return { hata: "Jev yanıtı okunamadı", elendi: false };
-    return { olasilik: p, elendi: p < PREFILTER_THRESHOLD };
+    if (typeof p !== "number") return { hata: "Sınıflandırıcı yanıtı okunamadı", elendi: false };
+    return { olasilik: p, elendi: p < PREFILTER_THRESHOLD, gorsel: images.length };
   } catch (e) {
     return { hata: e.message || String(e), elendi: false };
   }
