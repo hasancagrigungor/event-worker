@@ -8,8 +8,9 @@
   "routes": [{ "pattern": "api.aicalendar.com.tr", "custom_domain": true }],
   "ai": { "binding": "AI" },
   "vars": {
-    "TEXT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
-    "VISION_MODEL": "@cf/meta/llama-3.2-11b-vision-instruct",
+    "TEXT_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+    "VISION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+    "CLASSIFIER_MODEL": "typesafe/jev",
     "MAX_IMAGES": "3"
   }
 }

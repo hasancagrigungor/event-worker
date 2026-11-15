@@ -105,10 +105,23 @@ export default {
         }
       }
 
-      const event = await extractEvent(env, { source, url: target, content, imageNotes });
+      const [event, cls] = await Promise.all([
+        extractEvent(env, { source, url: target, content, imageNotes }),
+        classifyEvent(env, { source, content, imageNotes }),
+      ]);
+
+      // Jev "etkinlik değil" diyorsa (düşük olasılık) Gemma'nın kararını da geçersiz say
+      if (cls && cls.etkinlik_olasiligi != null && cls.etkinlik_olasiligi < JEV_EVENT_THRESHOLD) {
+        event.etkinlik_mi = false;
+      }
 
       return json({
         ...event,
+        kategori: cls?.kategori ?? null,
+        format: cls?.format ?? null,
+        ucretsiz: cls?.ucretsiz ?? null,
+        turkiye_mi: cls?.turkiye_mi ?? null,
+        siniflandirma: cls,
         kaynak: source,
         url: target,
         taranan_gorsel: source === "web" ? 0 : Math.min(content.images.length, maxImages),
@@ -372,7 +385,7 @@ async function describeImage(env, imageUrl) {
       temperature: 0,
     });
   } else {
-    // Llama 3.2 vision vb.: messages + data URL
+    // Gemma 4, Llama 3.2 vision vb.: messages + data URL
     const b64 = arrayBufferToBase64(buf);
     res = await env.AI.run(env.VISION_MODEL, {
       messages: [
@@ -386,10 +399,10 @@ async function describeImage(env, imageUrl) {
       ],
       max_tokens: 300,
       temperature: 0,
-      repetition_penalty: 1.3,
+      ...(isLegacyModel(env.VISION_MODEL) ? { repetition_penalty: 1.3 } : { chat_template_kwargs: { enable_thinking: false } }),
     });
   }
-  let out = (res?.response || res?.description || "").trim();
+  let out = aiText(res).trim();
   // Model tekrara girerse (aynı cümleyi döngüyle yazarsa) kırp
   const sentences = out.split(/(?<=[.!?\n])\s+/);
   const seen = new Set();
@@ -424,17 +437,21 @@ async function extractEvent(env, { source, url, content, imageNotes }) {
       : "") +
     `\nBu bilgilerden etkinliği JSON olarak çıkar.`;
 
+  const legacy = isLegacyModel(env.TEXT_MODEL);
   const res = await env.AI.run(env.TEXT_MODEL, {
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    response_format: { type: "json_schema", json_schema: EVENT_SCHEMA },
+    response_format: legacy
+      ? { type: "json_schema", json_schema: EVENT_SCHEMA }
+      : { type: "json_schema", json_schema: { name: "etkinlik", schema: EVENT_SCHEMA } },
     max_tokens: 512,
     temperature: 0.1,
+    ...(legacy ? {} : { chat_template_kwargs: { enable_thinking: false } }),
   });
 
-  let raw = res?.response ?? res;
+  let raw = res?.response ?? res?.choices?.[0]?.message?.content ?? res;
   let parsed = null;
   if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) parsed = raw;
   else if (typeof raw === "string") {
@@ -464,7 +481,102 @@ async function extractEvent(env, { source, url, content, imageNotes }) {
   };
 }
 
+/* ---------------- Jev sınıflandırma ---------------- */
+
+const JEV_EVENT_THRESHOLD = 0.35;
+const CATEGORIES = ["conference", "summit", "meetup", "hackathon", "workshop", "webinar"];
+
+/**
+ * TypeSafe Jev ile olasılıklı sınıflandırma: etkinlik mi, kategori, format, ücretsiz mi, Türkiye'de mi.
+ * Hata olursa null döner; çıkarma sonucu yine de kullanılır.
+ */
+async function classifyEvent(env, { source, content, imageNotes }) {
+  if (!env.CLASSIFIER_MODEL) return null;
+  const text = [
+    (content.text || "").slice(0, 6000),
+    ...imageNotes.map((n, i) => `[Görsel ${i + 1} metni] ${n}`),
+  ].join("\n\n").trim();
+  if (!text) return null;
+
+  try {
+    const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+      state: { kaynak: source, yayin_tarihi: content.publishedAt || null, bugun: new Date().toISOString().slice(0, 10), icerik: text },
+      questions: {
+        etkinlik: {
+          type: "noul",
+          instructions:
+            "Does `icerik` announce a specific event (conference, meetup, hackathon, workshop, webinar, summit, concert, festival, talk, competition, bootcamp) that people can attend in the future relative to `bugun`?",
+          criteria: {
+            true: "Announces a specific upcoming event with an attendable occurrence",
+            false: "Not an event announcement, a past event recap, a job post, an ad, or general content",
+          },
+        },
+        kategori: {
+          type: "choice",
+          instructions: "Which category best describes the event in `icerik`?",
+          criteria: {
+            conference: "Conference, congress, symposium, talk series, panel",
+            summit: "Summit or forum",
+            meetup: "Meetup, community gathering, networking",
+            hackathon: "Hackathon, datathon, ideathon, coding competition",
+            workshop: "Workshop, hands-on training, bootcamp, course",
+            webinar: "Webinar or online seminar",
+            other: "Concert, festival, exhibition, sports or anything else",
+          },
+        },
+        format: {
+          type: "choice",
+          instructions: "How will the event in `icerik` take place?",
+          criteria: {
+            "in-person": "Physical venue only",
+            online: "Online only (Zoom, YouTube, Teams, webinar, livestream)",
+            hybrid: "Both physical venue and online participation",
+          },
+        },
+        ucretsiz: {
+          type: "noul",
+          instructions: "Is attending the event in `icerik` free of charge?",
+          criteria: { true: "Explicitly free or no ticket price", false: "Paid ticket or price mentioned" },
+        },
+        turkiye: {
+          type: "noul",
+          instructions: "Does the event in `icerik` take place in Türkiye, or is it an online event aimed at a Turkish audience?",
+          criteria: { true: "In a Turkish city or Turkish-language online event", false: "Outside Türkiye" },
+        },
+      },
+    });
+    const a = res?.answers || {};
+    const p = (q) => (typeof a[q]?.noul === "number" ? a[q].noul : null);
+    const bool = (v, lo = 0.35, hi = 0.65) => (v == null ? null : v >= hi ? true : v <= lo ? false : null);
+    const cat = a.kategori?.choice;
+    return {
+      model: res?.model || env.CLASSIFIER_MODEL,
+      etkinlik_olasiligi: p("etkinlik"),
+      kategori: CATEGORIES.includes(cat) && (a.kategori?.confidence ?? 1) >= 0.4 ? cat : null,
+      kategori_olasiliklari: a.kategori?.probabilities || null,
+      format: ["in-person", "online", "hybrid"].includes(a.format?.choice) && (a.format?.confidence ?? 1) >= 0.4 ? a.format.choice : null,
+      ucretsiz: bool(p("ucretsiz")),
+      ucretsiz_olasiligi: p("ucretsiz"),
+      turkiye_mi: bool(p("turkiye")),
+      turkiye_olasiligi: p("turkiye"),
+    };
+  } catch (e) {
+    return { hata: e.message || String(e) };
+  }
+}
+
 /* ---------------- yardımcılar ---------------- */
+
+/** Eski Workers AI formatı (response alanı) kullanan modeller */
+function isLegacyModel(model) {
+  return /^@cf\/(meta|meta-llama|mistral|llava-hf|unum)\//.test(model || "");
+}
+
+/** Model yanıtındaki metni döndürür (eski `response` veya OpenAI `choices` formatı) */
+function aiText(res) {
+  const t = res?.response ?? res?.choices?.[0]?.message?.content ?? res?.description ?? "";
+  return typeof t === "string" ? t : JSON.stringify(t);
+}
 
 function normalizeDate(s) {
   if (!s) return null;

@@ -78,6 +78,11 @@ console.log(event.isim, event.tarih, event.saat, event.konum);
 | `etkinlik_mi`    | İçerik gerçekten bir etkinlik duyurusu mu |
 | `kaynak`         | `instagram`, `twitter`, `linkedin` veya `web` |
 | `taranan_gorsel` | Vision modeliyle taranan görsel sayısı |
+| `kategori`       | Jev: `conference`, `summit`, `meetup`, `hackathon`, `workshop`, `webinar` veya `null` |
+| `format`         | Jev: `in-person`, `online`, `hybrid` veya `null` |
+| `ucretsiz`       | Jev: ücretsizse `true`, ücretliyse `false`, emin değilse `null` |
+| `turkiye_mi`     | Jev: Türkiye'deyse veya Türkçe online etkinlikse `true`, emin değilse `null` |
+| `siniflandirma`  | Jev'in olasılıkları, model adı veya hata |
 | `ham`            | Debug: çekilen metin, görsellerden okunan notlar, yayın tarihi |
 
 Model bilmediği alanı uydurmaz, `null` bırakır. Görselden okunan bilgi yalnızca metinde olmayan alanları doldurmak için kullanılır; metin her zaman önceliklidir.
@@ -106,13 +111,15 @@ Akış:
 1. Linkin kaynağı tespit edilir, metin ve görsel URL'leri toplanır.
 2. Sosyal medya kaynaklarında her görsel vision modeline gönderilir; model yalnızca görselde yazan metni aktarır (OCR).
 3. Metin + görsel notları, JSON şema zorunlu bir metin modeline verilir ve yapılandırılmış sonuç alınır.
+4. Aynı anda Jev sınıflandırma modeline etkinlik mi, kategori, format, ücretsiz mi ve Türkiye'de mi soruları sorulur. Jev etkinlik olasılığını 0,35'in altında verirse `etkinlik_mi` false olur.
 
 Modeller (`wrangler.jsonc` > `vars`):
 
 | Değişken       | Varsayılan | Not |
 |----------------|------------|-----|
-| `TEXT_MODEL`   | `@cf/meta/llama-3.1-8b-instruct-fast` | JSON şema çıktısı destekler, ucuz |
-| `VISION_MODEL` | `@cf/meta/llama-3.2-11b-vision-instruct` | Meta lisans onayı gerekir (aşağıya bakın). Yedek: `@cf/llava-hf/llava-1.5-7b-hf` |
+| `TEXT_MODEL`   | `@cf/google/gemma-4-26b-a4b-it` | Bilgi çıkarma. JSON şema destekler, düşünme modu kapalı çalıştırılır. |
+| `VISION_MODEL` | `@cf/google/gemma-4-26b-a4b-it` | Afiş okuma. Aynı Gemma 4 modeli. |
+| `CLASSIFIER_MODEL` | `typesafe/jev` | Olasılıklı sınıflandırma. Boş bırakılırsa atlanır. |
 | `MAX_IMAGES`   | `3` | Gönderi başına taranacak en fazla görsel |
 
 ## Kurulum
@@ -126,9 +133,13 @@ npm run deploy
 
 `wrangler.jsonc` içindeki `routes` satırı özel alan adı içindir; kendi hesabınızda kullanacaksanız silin veya kendi alan adınızla değiştirin.
 
-### Llama 3.2 Vision lisans onayı
+### Jev için AI Gateway kredisi
 
-`@cf/meta/llama-3.2-11b-vision-instruct` modeli hesap başına bir kez Meta lisans onayı ister. Onay vermeden önce model `5016` hatası döner. Onay için modele ham `agree` prompt'u göndermek gerekir; Cloudflare Playground bunu sohbet formatında gönderdiği için orada çalışmaz. En kolay yol, geçici olarak worker'a şu rotayı ekleyip tarayıcıdan bir kez açmaktır:
+`typesafe/jev` üçüncü taraf bir modeldir ve Cloudflare hesabındaki AI Gateway kredisiyle ücretlendirilir. Kredi yoksa Jev `2021: Insufficient AI Gateway credits` hatası verir. Worker bu durumda sınıflandırmayı atlar ve Gemma'nın sonucunu döndürür. Hata `siniflandirma.hata` alanında görünür. Kredi Cloudflare panelinde AI > AI Gateway bölümünden yüklenir.
+
+### Llama 3.2 Vision lisans onayı (eski model)
+
+Gemma 4'e geçmeden önce kullanılan `@cf/meta/llama-3.2-11b-vision-instruct` modeli hesap başına bir kez Meta lisans onayı ister. Onay vermeden önce model `5016` hatası döner. Onay için modele ham `agree` prompt'u göndermek gerekir; Cloudflare Playground bunu sohbet formatında gönderdiği için orada çalışmaz. En kolay yol, geçici olarak worker'a şu rotayı ekleyip tarayıcıdan bir kez açmaktır:
 
 ```js
 if (new URL(request.url).pathname === "/agree-vision") {
