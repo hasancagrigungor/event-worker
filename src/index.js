@@ -885,11 +885,18 @@ async function writeSocialPost(env, body) {
   }
 
   const system =
-    "You write social media posts for people who follow AI news. Based ONLY on the Hacker News title, the post text " +
-    "and the community comments provided, write ONE engaging paragraph (60-110 words) in English: what it is about, why it " +
-    "matters for AI, and the most interesting points, disagreements or insights from the comments " +
-    '(you may refer to them as "the HN discussion"). Be accurate: do not invent facts, numbers, names or quotes that are ' +
-    "not in the material. No hashtags, no emojis, no links, no title line, no bullet points. Output only the paragraph.";
+    "You write short social media posts for people who follow AI. You get a Hacker News title, the post text and the " +
+    "community comments. Write ONE short post in English, 35-55 words.\n" +
+    "Rules:\n" +
+    "- Do NOT open with or restate the headline, and do not announce the news (no \"X released Y\", no \"a new article " +
+    "says\"). Assume readers already saw the headline.\n" +
+    "- Lead with an insight drawn from the discussion: a non-obvious takeaway, a tension, a trade-off, a surprising angle " +
+    "or an implication that a thoughtful AI practitioner would notice. One clear idea is better than a summary.\n" +
+    "- Sound like a person posting on X or LinkedIn: conversational, direct, a point of view but fair. You may end with a " +
+    "short question or a punchy line. Not a blog post, not a news report, not a recap of who said what.\n" +
+    "- Use only what is in the material; do not invent facts, numbers or names, and do not merge separate points from " +
+    "different comments into one claim.\n" +
+    "- No hashtags, no emojis, no links, no quotes, no bullet points, no title. Output only the post.";
   const user =
     `Title: ${body.baslik}\n` +
     (body.link ? `Linked article (not read): ${body.link}\n` : "") +
@@ -900,7 +907,7 @@ async function writeSocialPost(env, body) {
     { role: "system", content: system },
     { role: "user", content: user },
   ], { maxTokens: 600 });
-  if (!en || en.length < 40) throw new Error("Post yazılamadı");
+  if (!en || en.length < 30) throw new Error("Post yazılamadı");
 
   const targets = Object.entries(POST_LANGS).filter(([k]) => k !== "en");
   const schema = {
@@ -914,13 +921,15 @@ async function writeSocialPost(env, body) {
       {
         role: "system",
         content:
-          "You are a professional translator for social media. Translate the given paragraph into each requested language. " +
-          "Keep the meaning, tone and length; keep product, company and person names as they are; sound natural to native " +
-          "speakers. Return a JSON object whose keys are the language codes and values are the translations.",
+          "You translate short social media posts. Translate the given post into each requested language so it reads like a " +
+          "native speaker's own post on X or LinkedIn: same meaning, same punchy conversational tone, similar length. Translate " +
+          "every sentence completely (do not drop or merge sentences), use correct native grammar and idioms rather than " +
+          "word-for-word phrasing, and keep product, company and person names as they are. Return a JSON object whose keys " +
+          "are the language codes and values are the translations.",
       },
       {
         role: "user",
-        content: `Languages: ${targets.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nParagraph:\n${en}`,
+        content: `Languages: ${targets.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nPost:\n${en}`,
       },
     ],
     { maxTokens: 6000, schema, temperature: 0.2 }
