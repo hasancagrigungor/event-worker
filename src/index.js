@@ -1037,22 +1037,63 @@ async function writeSocialPost(env, body) {
   ], { maxTokens: 600 });
   if (!en || en.length < 30) throw new Error("Post yazılamadı");
 
+  // Kart ve paylaşım için kısa, dikkat çekici başlık (postla tutarlı, abartısız)
+  let title = "";
+  try {
+    title = (
+      await runWriter(
+        env,
+        [
+          {
+            role: "system",
+            content:
+              "You write headlines for image cards on social media about AI and tech. The card shows only the headline in " +
+              "big letters, so it must be short and instantly clear. Given a post and the original title, write ONE English " +
+              "headline of 4-8 words, max 50 characters.\n" +
+              "- One idea only. Name the subject (product, company or topic) and say what happened or why it matters, with " +
+              "a strong verb or a number from the post. No colon-separated two-part headlines, no filler words.\n" +
+              "- It must be true to the post: no exaggeration, no claims that are not in the post, no question-bait. Keep " +
+              "technical terms exactly as the post uses them (asymmetric wing is not a two-wing or biplane).\n" +
+              "- No quotes, no emojis, no hashtags, no ending period, no \"Breaking\". Title case is not required.\n" +
+              "Output only the headline.",
+          },
+          { role: "user", content: `Original title: ${body.baslik}\n\nPost:\n${en}` },
+        ],
+        { maxTokens: 80, temperature: 0.7 }
+      )
+    )
+      .split("\n")[0]
+      .replace(/^["'“”‘’\s]+|["'“”‘’.\s]+$/g, "")
+      .slice(0, 70);
+  } catch {
+    title = "";
+  }
+  if (title.length < 8) title = String(body.baslik).slice(0, 90);
+
   const targets = Object.entries(POST_LANGS).filter(([k]) => k !== "en");
   const translateSystem =
-    "You are a professional social media translator. Translate the post into each requested language so it reads " +
-    "like a native tech writer's own post on X or LinkedIn.\n" +
+    "You are a professional social media translator. You get a headline and a post. Translate both into each requested " +
+    "language so they read like a native tech writer's own news card and post on X or LinkedIn.\n" +
     "- Keep the full meaning of every sentence: no dropped, merged or added claims, and keep hedges like \"may\".\n" +
     "- Translate meaning, not words: idioms and jargon (e.g. \"moat\", \"frontier model\", a drone's \"launch\" meaning " +
     "take-off, not a product launch) must become the natural term a native expert would use.\n" +
+    "- The headline is shown alone in big letters on an image: keep it as short as the English one (about the same " +
+    "number of words, never longer than 60 characters; for Chinese and Japanese at most 20 characters), natural and " +
+    "clear in the target language, not literal.\n" +
     "- Keep product, company and person names unchanged. Do not leave English words in the translation when the language " +
     "has a common native word (e.g. Turkish \"önem\" not \"relevans\"); keep only established tech terms. Keep the same " +
     "tone and similar length.\n" +
-    "- Each value must be the complete post; never stop mid-sentence.\n" +
-    "Return a JSON object whose keys are the language codes and values are the translations.";
+    "- Each post must be complete; never stop mid-sentence.\n" +
+    "Return a JSON object whose keys are the language codes and values are objects {\"title\": ..., \"post\": ...}.";
   const translate = async (langs) => {
     const schema = {
       type: "object",
-      properties: Object.fromEntries(langs.map(([k]) => [k, { type: "string" }])),
+      properties: Object.fromEntries(
+        langs.map(([k]) => [
+          k,
+          { type: "object", properties: { title: { type: "string" }, post: { type: "string" } }, required: ["title", "post"] },
+        ])
+      ),
       required: langs.map(([k]) => k),
     };
     try {
@@ -1060,9 +1101,12 @@ async function writeSocialPost(env, body) {
         env,
         [
           { role: "system", content: translateSystem },
-          { role: "user", content: `Languages: ${langs.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nPost:\n${en}` },
+          {
+            role: "user",
+            content: `Languages: ${langs.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nHeadline:\n${title}\n\nPost:\n${en}`,
+          },
         ],
-        { maxTokens: 700 * langs.length, schema, temperature: 0.2 }
+        { maxTokens: 800 * langs.length, schema, temperature: 0.2 }
       );
       return parseJsonLoose(raw);
     } catch {
@@ -1072,19 +1116,28 @@ async function writeSocialPost(env, body) {
   // Yarıda kesilmiş çeviri: İngilizce noktalama ile bitiyor ama çeviri bitmiyor ya da çok kısa
   const complete = (t) =>
     typeof t === "string" && t.trim().length > en.length * 0.15 && (!/[.!?]$/.test(en) || /[.!?。！？؟…]$/.test(t.trim()));
+  const cleanTitle = (t) => (typeof t === "string" ? t.trim().replace(/^["'“”«»「」]+|["'“”«»「」.。]+$/g, "").slice(0, 120) : "");
 
   const post = { en };
+  const titles = { en: title };
+  const take = (k, v) => {
+    if (v && complete(v.post)) {
+      post[k] = v.post.trim();
+      titles[k] = cleanTitle(v.title) || title;
+    }
+  };
   const half = Math.ceil(targets.length / 2);
   const groups = await Promise.all([translate(targets.slice(0, half)), translate(targets.slice(half))]);
-  for (const g of groups) for (const [k, v] of Object.entries(g)) if (complete(v)) post[k] = v.trim();
+  for (const g of groups) for (const [k, v] of Object.entries(g)) if (POST_LANGS[k]) take(k, v);
   const retry = targets.filter(([k]) => !post[k]);
   const again = await Promise.all(retry.map((t) => translate([t])));
-  retry.forEach(([k], i) => {
-    if (complete(again[i][k])) post[k] = again[i][k].trim();
-  });
-  for (const [k] of targets) post[k] = post[k] || "";
+  retry.forEach(([k], i) => take(k, again[i][k]));
+  for (const [k] of targets) {
+    post[k] = post[k] || "";
+    titles[k] = post[k] ? titles[k] : "";
+  }
   const missing = targets.filter(([k]) => !post[k]).map(([k]) => k);
-  return { post, diller: Object.keys(POST_LANGS), eksik_dil: missing, model: env.POST_MODEL };
+  return { post, baslik: titles, diller: Object.keys(POST_LANGS), eksik_dil: missing, model: env.POST_MODEL };
 }
 
 /* ---------------- yardımcılar ---------------- */
