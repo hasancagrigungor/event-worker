@@ -80,7 +80,9 @@ export default {
       }
       if (!body?.baslik) return json({ error: "baslik gerekli" }, 400);
       try {
-        return json(await writeSocialPost(env, body));
+        // İsteğe bağlı model seçimi (karşılaştırma için), yalnızca izinli yazar modelleri
+        const model = WRITER_MODELS.includes(body.model) ? body.model : env.POST_MODEL;
+        return json(await writeSocialPost({ ...env, POST_MODEL: model }, body));
       } catch (e) {
         return json({ error: e.message || String(e) }, 502);
       }
@@ -836,6 +838,15 @@ async function classifyUrls(env, urls, kind = "sayfa") {
 /* ---------------- Hacker News içerik akışı ---------------- */
 
 // Türkçe dahil 11 büyük dil; post önce İngilizce yazılır, sonra çevrilir
+const WRITER_MODELS = [
+  "@cf/zai-org/glm-5.3",
+  "@cf/moonshotai/kimi-k2.6",
+  "@cf/deepseek-ai/deepseek-v4-pro-0813",
+  "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+  "@cf/qwen/qwen3.8-27b",
+  "@cf/google/gemma-4-26b-a4b-it",
+];
+
 const POST_LANGS = {
   en: "English",
   tr: "Turkish",
@@ -966,6 +977,11 @@ async function runWriter(env, messages, { maxTokens = 1200, schema = null, tempe
     input.reasoning_effort = "low";
     input.max_tokens = maxTokens + 3000;
   }
+  else if (/kimi|deepseek/i.test(model)) {
+    // Düşünme kapatılamazsa da cevap için yer kalsın
+    input.chat_template_kwargs = { thinking: false, enable_thinking: false };
+    input.max_tokens = maxTokens + 4000;
+  }
   else if (/gemma-4|qwen3/i.test(model)) input.chat_template_kwargs = { enable_thinking: false };
   else if (/gpt-oss/i.test(model)) input.reasoning = { effort: "low" };
   const res = await env.AI.run(model, input);
@@ -993,18 +1009,22 @@ async function writeSocialPost(env, body) {
   }
 
   const system =
-    "You write short social media posts for people who follow AI. You get a Hacker News title, the post text and the " +
-    "community comments. Write ONE short post in English, 35-55 words.\n" +
-    "Rules:\n" +
-    "- Do NOT open with or restate the headline, and do not announce the news (no \"X released Y\", no \"a new article " +
-    "says\"). Assume readers already saw the headline.\n" +
-    "- Lead with an insight drawn from the discussion: a non-obvious takeaway, a tension, a trade-off, a surprising angle " +
-    "or an implication that a thoughtful AI practitioner would notice. One clear idea is better than a summary.\n" +
-    "- Sound like a person posting on X or LinkedIn: conversational, direct, a point of view but fair. You may end with a " +
-    "short question or a punchy line. Not a blog post, not a news report, not a recap of who said what.\n" +
-    "- Use only what is in the material; do not invent facts, numbers or names, and do not merge separate points from " +
-    "different comments into one claim.\n" +
-    "- No hashtags, no emojis, no links, no quotes, no bullet points, no title. Output only the post.";
+    "You are a sharp AI practitioner who posts on X and LinkedIn. You get a Hacker News title, the post text and the " +
+    "community discussion. Write ONE post in English, 45-75 words, 2-4 short sentences.\n" +
+    "What a good post does:\n" +
+    "- First sentence is a hook that makes people stop scrolling: a surprising fact, a tension or a bold but defensible " +
+    "claim. It names the subject (product, company or topic) so the post makes sense without the headline, but it does " +
+    "not announce the news (no \"X just released Y\", no \"a new article says\").\n" +
+    "- Then one concrete detail from the material (a number, a mechanism, a specific trade-off) that backs the hook.\n" +
+    "- End with the so-what: why it matters for people building or using AI, or a short question worth answering.\n" +
+    "- Write in your own voice as an informed person. Do not narrate the thread: never write \"commenters\", " +
+    "\"the discussion\", \"people on HN\", \"one user\".\n" +
+    "Accuracy:\n" +
+    "- Use only facts that are in the material. Do not invent numbers, names, dates or events. Ignore jokes, sarcasm, " +
+    "insults and off-topic replies, and do not turn one person's guess into a fact; say \"may\" when it is opinion.\n" +
+    "- Every sentence must be clear on its own; no vague references like \"this\" or \"they\" without a subject.\n" +
+    "Style: plain words, no clichés (\"game-changer\", \"the real story\", \"here's the thing\", \"buckle up\"), " +
+    "no hashtags, emojis, links, quotes, bullet points or title. Output only the post.";
   const user =
     `Title: ${body.baslik}\n` +
     (body.link ? `Linked article (not read): ${body.link}\n` : "") +
@@ -1018,33 +1038,51 @@ async function writeSocialPost(env, body) {
   if (!en || en.length < 30) throw new Error("Post yazılamadı");
 
   const targets = Object.entries(POST_LANGS).filter(([k]) => k !== "en");
-  const schema = {
-    type: "object",
-    properties: Object.fromEntries(targets.map(([k]) => [k, { type: "string" }])),
-    required: targets.map(([k]) => k),
+  const translateSystem =
+    "You are a professional social media translator. Translate the post into each requested language so it reads " +
+    "like a native tech writer's own post on X or LinkedIn.\n" +
+    "- Keep the full meaning of every sentence: no dropped, merged or added claims, and keep hedges like \"may\".\n" +
+    "- Translate meaning, not words: idioms and jargon (e.g. \"moat\", \"frontier model\", a drone's \"launch\" meaning " +
+    "take-off, not a product launch) must become the natural term a native expert would use.\n" +
+    "- Keep product, company and person names unchanged. Do not leave English words in the translation when the language " +
+    "has a common native word (e.g. Turkish \"önem\" not \"relevans\"); keep only established tech terms. Keep the same " +
+    "tone and similar length.\n" +
+    "- Each value must be the complete post; never stop mid-sentence.\n" +
+    "Return a JSON object whose keys are the language codes and values are the translations.";
+  const translate = async (langs) => {
+    const schema = {
+      type: "object",
+      properties: Object.fromEntries(langs.map(([k]) => [k, { type: "string" }])),
+      required: langs.map(([k]) => k),
+    };
+    try {
+      const raw = await runWriter(
+        env,
+        [
+          { role: "system", content: translateSystem },
+          { role: "user", content: `Languages: ${langs.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nPost:\n${en}` },
+        ],
+        { maxTokens: 700 * langs.length, schema, temperature: 0.2 }
+      );
+      return parseJsonLoose(raw);
+    } catch {
+      return {};
+    }
   };
-  const translated = await runWriter(
-    env,
-    [
-      {
-        role: "system",
-        content:
-          "You translate short social media posts. Translate the given post into each requested language so it reads like a " +
-          "native speaker's own post on X or LinkedIn: same meaning, same punchy conversational tone, similar length. Translate " +
-          "every sentence completely (do not drop or merge sentences), use correct native grammar and idioms rather than " +
-          "word-for-word phrasing, and keep product, company and person names as they are. Return a JSON object whose keys " +
-          "are the language codes and values are the translations.",
-      },
-      {
-        role: "user",
-        content: `Languages: ${targets.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nPost:\n${en}`,
-      },
-    ],
-    { maxTokens: 6000, schema, temperature: 0.2 }
-  );
-  const tr = parseJsonLoose(translated);
+  // Yarıda kesilmiş çeviri: İngilizce noktalama ile bitiyor ama çeviri bitmiyor ya da çok kısa
+  const complete = (t) =>
+    typeof t === "string" && t.trim().length > en.length * 0.15 && (!/[.!?]$/.test(en) || /[.!?。！？؟…]$/.test(t.trim()));
+
   const post = { en };
-  for (const [k] of targets) post[k] = typeof tr[k] === "string" ? tr[k].trim() : "";
+  const half = Math.ceil(targets.length / 2);
+  const groups = await Promise.all([translate(targets.slice(0, half)), translate(targets.slice(half))]);
+  for (const g of groups) for (const [k, v] of Object.entries(g)) if (complete(v)) post[k] = v.trim();
+  const retry = targets.filter(([k]) => !post[k]);
+  const again = await Promise.all(retry.map((t) => translate([t])));
+  retry.forEach(([k], i) => {
+    if (complete(again[i][k])) post[k] = again[i][k].trim();
+  });
+  for (const [k] of targets) post[k] = post[k] || "";
   const missing = targets.filter(([k]) => !post[k]).map(([k]) => k);
   return { post, diller: Object.keys(POST_LANGS), eksik_dil: missing, model: env.POST_MODEL };
 }
