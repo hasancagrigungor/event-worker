@@ -55,6 +55,37 @@ export default {
     }
 
     // Link listesi için hızlı ön eleme (sayfalar açılmaz, sadece adreslere bakılır)
+    // Hacker News içerik akışı: başlık AI ile ilgili mi? (karar modeli)
+    if (reqUrl.pathname === "/ai-konu") {
+      if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "geçersiz JSON" }, 400);
+      }
+      const items = Array.isArray(body?.items) ? body.items.filter((i) => i && typeof i.title === "string").slice(0, 100) : [];
+      if (!items.length) return json({ error: "items listesi gerekli: [{id, title, text?}]" }, 400);
+      return json({ sonuclar: await classifyAiTopic(env, items) });
+    }
+
+    // Hacker News içerik akışı: başlık + açıklama + yorumlardan tek paragraf post yaz, 11 dile çevir
+    if (reqUrl.pathname === "/post-yaz") {
+      if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "geçersiz JSON" }, 400);
+      }
+      if (!body?.baslik) return json({ error: "baslik gerekli" }, 400);
+      try {
+        return json(await writeSocialPost(env, body));
+      } catch (e) {
+        return json({ error: e.message || String(e) }, 502);
+      }
+    }
+
     if (reqUrl.pathname === "/classify") {
       if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
       let body;
@@ -762,6 +793,145 @@ async function classifyUrls(env, urls, kind = "sayfa") {
   return out;
 }
 
+/* ---------------- Hacker News içerik akışı ---------------- */
+
+// Türkçe dahil 11 büyük dil; post önce İngilizce yazılır, sonra çevrilir
+const POST_LANGS = {
+  en: "English",
+  tr: "Turkish",
+  es: "Spanish",
+  fr: "French",
+  de: "German",
+  pt: "Portuguese (Brazil)",
+  it: "Italian",
+  ru: "Russian",
+  ar: "Arabic",
+  ja: "Japanese",
+  zh: "Chinese (Simplified)",
+};
+
+async function classifyAiTopic(env, items) {
+  const one = async (it) => {
+    if (!env.CLASSIFIER_MODEL) return { id: it.id, olasilik: null, ai_mi: null, hata: "CLASSIFIER_MODEL tanımlı değil" };
+    try {
+      const res = await env.AI.run(env.CLASSIFIER_MODEL, {
+        ...classifierExtra(env),
+        state: { baslik: it.title, metin: (it.text || "").slice(0, 2000) },
+        questions: {
+          ai: {
+            type: "noul",
+            instructions:
+              "Is this Hacker News post related to artificial intelligence, even loosely? Count AI/ML, LLMs, chatbots, " +
+              "AI agents, AI companies and products, AI chips/GPUs/compute for AI, training data, AI policy/regulation/safety, " +
+              "AI's impact on jobs, software or society, and robotics or computer vision.",
+            criteria: { true: "Related to AI in any way", false: "No connection to AI" },
+          },
+        },
+      });
+      const p = res?.answers?.ai?.noul;
+      if (typeof p !== "number") return { id: it.id, olasilik: null, ai_mi: null, hata: "yanıt okunamadı" };
+      return { id: it.id, olasilik: p, ai_mi: p >= 0.5 };
+    } catch (e) {
+      return { id: it.id, olasilik: null, ai_mi: null, hata: e.message || String(e) };
+    }
+  };
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(6, items.length) }, async () => {
+      while (i < items.length) {
+        const k = i++;
+        out[k] = await one(items[k]);
+      }
+    })
+  );
+  return out;
+}
+
+/** Güçlü modelle sohbet çağrısı; model ailesine göre düşünme kapatılır / azaltılır */
+async function runWriter(env, messages, { maxTokens = 1200, schema = null, temperature = 0.6 } = {}) {
+  const model = env.POST_MODEL;
+  const input = { messages, max_tokens: maxTokens, temperature };
+  if (schema) input.response_format = { type: "json_schema", json_schema: { name: "cikti", schema } };
+  // GLM düşünme modunu kapatma isteğini yok sayıyor: düşünmeyi kısalt ve düşünme için token payı bırak
+  if (/zai-org|glm/i.test(model)) {
+    input.reasoning_effort = "low";
+    input.max_tokens = maxTokens + 3000;
+  }
+  else if (/gemma-4|qwen3/i.test(model)) input.chat_template_kwargs = { enable_thinking: false };
+  else if (/gpt-oss/i.test(model)) input.reasoning = { effort: "low" };
+  const res = await env.AI.run(model, input);
+  return aiText(res).trim();
+}
+
+function parseJsonLoose(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) return JSON.parse(m[0]);
+    throw new Error("Model geçerli JSON döndürmedi");
+  }
+}
+
+async function writeSocialPost(env, body) {
+  const comments = (Array.isArray(body.yorumlar) ? body.yorumlar : [])
+    .filter((c) => typeof c === "string" && c.trim())
+    .slice(0, 60);
+  let commentText = "";
+  for (const c of comments) {
+    if (commentText.length > 9000) break;
+    commentText += `- ${c.replace(/\s+/g, " ").slice(0, 700)}\n`;
+  }
+
+  const system =
+    "You write social media posts for people who follow AI news. Based ONLY on the Hacker News title, the post text " +
+    "and the community comments provided, write ONE engaging paragraph (60-110 words) in English: what it is about, why it " +
+    "matters for AI, and the most interesting points, disagreements or insights from the comments " +
+    '(you may refer to them as "the HN discussion"). Be accurate: do not invent facts, numbers, names or quotes that are ' +
+    "not in the material. No hashtags, no emojis, no links, no title line, no bullet points. Output only the paragraph.";
+  const user =
+    `Title: ${body.baslik}\n` +
+    (body.link ? `Linked article (not read): ${body.link}\n` : "") +
+    (body.metin ? `\nPost text:\n${String(body.metin).slice(0, 4000)}\n` : "") +
+    (commentText ? `\nComments:\n${commentText}` : "\n(No comments yet.)\n");
+
+  const en = await runWriter(env, [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ], { maxTokens: 600 });
+  if (!en || en.length < 40) throw new Error("Post yazılamadı");
+
+  const targets = Object.entries(POST_LANGS).filter(([k]) => k !== "en");
+  const schema = {
+    type: "object",
+    properties: Object.fromEntries(targets.map(([k]) => [k, { type: "string" }])),
+    required: targets.map(([k]) => k),
+  };
+  const translated = await runWriter(
+    env,
+    [
+      {
+        role: "system",
+        content:
+          "You are a professional translator for social media. Translate the given paragraph into each requested language. " +
+          "Keep the meaning, tone and length; keep product, company and person names as they are; sound natural to native " +
+          "speakers. Return a JSON object whose keys are the language codes and values are the translations.",
+      },
+      {
+        role: "user",
+        content: `Languages: ${targets.map(([k, n]) => `${k} = ${n}`).join(", ")}\n\nParagraph:\n${en}`,
+      },
+    ],
+    { maxTokens: 6000, schema, temperature: 0.2 }
+  );
+  const tr = parseJsonLoose(translated);
+  const post = { en };
+  for (const [k] of targets) post[k] = typeof tr[k] === "string" ? tr[k].trim() : "";
+  const missing = targets.filter(([k]) => !post[k]).map(([k]) => k);
+  return { post, diller: Object.keys(POST_LANGS), eksik_dil: missing, model: env.POST_MODEL };
+}
+
 /* ---------------- yardımcılar ---------------- */
 
 /** Sınıflandırıcıya özel ek alanlar: Cloudflare clef modelleri `model` seçicisi ister, Jev istemez */
@@ -788,7 +958,16 @@ function isLegacyModel(model) {
 
 /** Model yanıtındaki metni döndürür (eski `response` veya OpenAI `choices` formatı) */
 function aiText(res) {
-  const t = res?.response ?? res?.choices?.[0]?.message?.content ?? res?.description ?? "";
+  let t = res?.response ?? res?.choices?.[0]?.message?.content ?? res?.output_text ?? res?.description;
+  if (t == null && Array.isArray(res?.output)) {
+    // OpenAI Responses biçimi (ör. gpt-oss): output[].content[].text
+    t = res.output
+      .filter((o) => o?.type === "message")
+      .flatMap((o) => o.content || [])
+      .map((c) => c?.text || "")
+      .join("");
+  }
+  t = t ?? "";
   return typeof t === "string" ? t : JSON.stringify(t);
 }
 
