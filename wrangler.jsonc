@@ -12,6 +12,7 @@
     "VISION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
     "CLASSIFIER_MODEL": "@cf/cloudflare/clef-flash",
     "POST_MODEL": "@cf/zai-org/glm-5.3",
+    "EMBED_MODEL": "@cf/baai/bge-m3",
     "MAX_IMAGES": "3"
   }
 }

@@ -86,6 +86,46 @@ export default {
       }
     }
 
+    // Stok görsel: içerikten Pexels için kısa İngilizce arama ifadeleri
+    if (reqUrl.pathname === "/gorsel-sorgu") {
+      if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "geçersiz JSON" }, 400);
+      }
+      const metin = typeof body?.metin === "string" ? body.metin.trim().slice(0, 3000) : "";
+      if (!metin) return json({ error: "metin gerekli" }, 400);
+      try {
+        return json({ sorgular: await stockQueries(env, metin) });
+      } catch (e) {
+        return json({ error: e.message || String(e) }, 502);
+      }
+    }
+
+    // Stok görsel: aday görsellerin açıklamalarını (Pexels yolundaki ifade + alt metin) içerikle
+    // embedding benzerliğine göre sıralar
+    if (reqUrl.pathname === "/gorsel-sec") {
+      if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "geçersiz JSON" }, 400);
+      }
+      const metin = typeof body?.metin === "string" ? body.metin.trim().slice(0, 2000) : "";
+      const adaylar = Array.isArray(body?.adaylar)
+        ? body.adaylar.filter((a) => a && a.id != null && typeof a.aciklama === "string" && a.aciklama.trim()).slice(0, 200)
+        : [];
+      if (!metin || !adaylar.length) return json({ error: "metin ve adaylar [{id, aciklama}] gerekli" }, 400);
+      try {
+        return json({ model: env.EMBED_MODEL, siralama: await rankByEmbedding(env, metin, adaylar) });
+      } catch (e) {
+        return json({ error: e.message || String(e) }, 502);
+      }
+    }
+
     if (reqUrl.pathname === "/classify") {
       if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
       let body;
@@ -846,6 +886,61 @@ async function classifyAiTopic(env, items) {
     })
   );
   return out;
+}
+
+/* ---------------- Stok görsel (Pexels) ---------------- */
+
+/** İçerikten 3 kısa İngilizce Pexels arama ifadesi (hızlı model) */
+async function stockQueries(env, metin) {
+  const schema = {
+    type: "object",
+    properties: { sorgular: { type: "array", items: { type: "string" }, description: "2-4 words each, English" } },
+    required: ["sorgular"],
+  };
+  const legacy = isLegacyModel(env.TEXT_MODEL);
+  const res = await env.AI.run(env.TEXT_MODEL, {
+    messages: [
+      {
+        role: "system",
+        content:
+          "You pick stock photos. Given a text in any language, return 3 short English search queries (2-4 words each) " +
+          "for a stock photo site that would find a fitting, realistic cover photo. Describe concrete visual scenes " +
+          "(people, places, objects), not abstract words, brand names or text. Return only JSON.",
+      },
+      { role: "user", content: metin },
+    ],
+    response_format: legacy
+      ? { type: "json_schema", json_schema: schema }
+      : { type: "json_schema", json_schema: { name: "sorgular", schema } },
+    max_tokens: 200,
+    temperature: 0.3,
+    ...(legacy ? {} : { chat_template_kwargs: { enable_thinking: false } }),
+  });
+  const raw = res?.response ?? res?.choices?.[0]?.message?.content ?? res;
+  const data = typeof raw === "string" ? parseJsonLoose(raw) : raw;
+  const out = (Array.isArray(data?.sorgular) ? data.sorgular : [])
+    .filter((q) => typeof q === "string" && q.trim())
+    .map((q) => q.trim().replace(/[^\p{L}\p{N} \-]/gu, "").slice(0, 60))
+    .filter(Boolean);
+  return [...new Set(out)].slice(0, 4);
+}
+
+/** bge-m3 sorgu-bağlam modu: her aday için benzerlik puanı, büyükten küçüğe */
+async function rankByEmbedding(env, metin, adaylar) {
+  const scores = [];
+  for (let i = 0; i < adaylar.length; i += 50) {
+    const chunk = adaylar.slice(i, i + 50);
+    const res = await env.AI.run(env.EMBED_MODEL, {
+      query: metin,
+      contexts: chunk.map((a) => ({ text: a.aciklama.slice(0, 500) })),
+      truncate_inputs: true,
+    });
+    for (const r of res?.response || []) {
+      const a = chunk[r.id];
+      if (a) scores.push({ id: a.id, skor: Math.round(r.score * 10000) / 10000 });
+    }
+  }
+  return scores.sort((x, y) => y.skor - x.skor);
 }
 
 /** Güçlü modelle sohbet çağrısı; model ailesine göre düşünme kapatılır / azaltılır */
