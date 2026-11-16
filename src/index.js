@@ -904,8 +904,21 @@ async function stockQueries(env, metin) {
         role: "system",
         content:
           "You pick stock photos. Given a text in any language, return 3 short English search queries (2-4 words each) " +
-          "for a stock photo site that would find a fitting, realistic cover photo. Describe concrete visual scenes " +
-          "(people, places, objects), not abstract words, brand names or text. Return only JSON.",
+          "for a stock photo site (Pexels) that would find a fitting, realistic cover photo. Put the most specific query first.\n" +
+          "Rules:\n" +
+          "- Describe concrete visual scenes: people, places, objects. Use nouns a photographer would tag. No brand or product names, no text.\n" +
+          "- FIRST decide the story type. If it is about a law, act, regulation, ban, lawsuit, court ruling or government policy " +
+          "(even if the subject is AI or tech), this rule wins: the first two queries must be legal/government visuals such as " +
+          "'judge gavel', 'courthouse columns', 'parliament building', 'government flags'; the third may be a tech visual.\n" +
+          "- AI, machine learning, LLM, software, developer tools, chips or other tech news: use concrete tech visuals such as " +
+          "'microchip close up', 'server racks data center', 'code on laptop screen', 'programmer at night', 'robot arm', " +
+          "'humanoid robot', 'circuit board light', 'neural network light'. Pick what matches the story (hardware -> chips, " +
+          "models/research -> neural network light or code screen, robotics -> robots, infrastructure -> data center).\n" +
+          "- Avoid charts, graphs, stock market, business meeting, handshake and generic office scenes unless the text is " +
+          "actually about finance, markets or a business deal. Avoid vague words like 'data', 'digital', 'concept', 'abstract' on their own.\n" +
+          "- Security or privacy news: 'padlock on keyboard', 'hacker hoodie laptop', 'security camera'.\n" +
+          "- Events: show the kind of event (stage and audience, hackathon team with laptops, workshop table, meetup networking).\n" +
+          "Return only JSON.",
       },
       { role: "user", content: metin },
     ],
