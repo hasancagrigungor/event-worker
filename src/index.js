@@ -82,6 +82,11 @@ export default {
       try {
         // İsteğe bağlı model seçimi (karşılaştırma için), yalnızca izinli yazar modelleri
         const model = WRITER_MODELS.includes(body.model) ? body.model : env.POST_MODEL;
+        // Panelden seçilirse Gemini (anahtar ve model adı istekle gelir, saklanmaz)
+        const g = body.gemini;
+        if (g && typeof g.key === "string" && g.key.trim() && /^[\w.\-]{3,80}$/.test(g.model || "")) {
+          return json(await writeSocialPost({ ...env, GEMINI_KEY: g.key.trim(), POST_MODEL: `gemini/${g.model}` }, body));
+        }
         return json(await writeSocialPost({ ...env, POST_MODEL: model }, body));
       } catch (e) {
         return json({ error: e.message || String(e) }, 502);
@@ -970,6 +975,7 @@ async function rankByEmbedding(env, metin, adaylar) {
 /** Güçlü modelle sohbet çağrısı; model ailesine göre düşünme kapatılır / azaltılır */
 async function runWriter(env, messages, { maxTokens = 1200, schema = null, temperature = 0.6 } = {}) {
   const model = env.POST_MODEL;
+  if (env.GEMINI_KEY) return runGemini(env, messages, { maxTokens, schema, temperature });
   const input = { messages, max_tokens: maxTokens, temperature };
   if (schema) input.response_format = { type: "json_schema", json_schema: { name: "cikti", schema } };
   // GLM düşünme modunu kapatma isteğini yok sayıyor: düşünmeyi kısalt ve düşünme için token payı bırak
@@ -986,6 +992,24 @@ async function runWriter(env, messages, { maxTokens = 1200, schema = null, tempe
   else if (/gpt-oss/i.test(model)) input.reasoning = { effort: "low" };
   const res = await env.AI.run(model, input);
   return aiText(res).trim();
+}
+
+/** Gemini (OpenAI uyumlu uç). Düşünen modellerde düşünme kısılır ve ona token payı bırakılır. */
+async function runGemini(env, messages, { maxTokens, schema, temperature }) {
+  const model = env.POST_MODEL.replace(/^gemini\//, "");
+  const input = { model, messages, max_tokens: maxTokens + 3000, temperature, reasoning_effort: "low" };
+  if (schema) input.response_format = { type: "json_schema", json_schema: { name: "cikti", schema } };
+  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${env.GEMINI_KEY}` },
+    body: JSON.stringify(input),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = Array.isArray(data) ? data[0]?.error : data?.error;
+    throw new Error(`Gemini ${res.status}: ${err?.message || "istek başarısız"}`.slice(0, 300));
+  }
+  return aiText(data).trim();
 }
 
 function parseJsonLoose(text) {
