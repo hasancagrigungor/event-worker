@@ -93,6 +93,27 @@ export default {
       }
     }
 
+    // Hugging Face günlük trendleri: zirvedeki modeller için carousel metni (kapak + model başına slayt), 11 dil
+    if (reqUrl.pathname === "/hf-trend") {
+      if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "geçersiz JSON" }, 400);
+      }
+      const models = Array.isArray(body?.modeller) ? body.modeller.filter((m) => m && typeof m.id === "string").slice(0, 8) : [];
+      if (!models.length) return json({ error: "modeller listesi gerekli: [{id, ...}]" }, 400);
+      try {
+        const g = body.gemini;
+        const useGemini = g && typeof g.key === "string" && g.key.trim() && /^[\w.\-]{3,80}$/.test(g.model || "");
+        const e = useGemini ? { ...env, GEMINI_KEY: g.key.trim(), POST_MODEL: `gemini/${g.model}` } : env;
+        return json(await writeHfTrend(e, models, body.tarih));
+      } catch (err) {
+        return json({ error: err.message || String(err) }, 502);
+      }
+    }
+
     // Stok görsel: içerikten Pexels için kısa İngilizce arama ifadeleri
     if (reqUrl.pathname === "/gorsel-sorgu") {
       if (request.method !== "POST") return json({ error: "POST bekleniyor" }, 405);
@@ -1188,6 +1209,128 @@ async function writeSocialPost(env, body) {
   }
   const missing = targets.filter(([k]) => !post[k]).map(([k]) => k);
   return { post, baslik: titles, diller: Object.keys(POST_LANGS), eksik_dil: missing, model: env.POST_MODEL };
+}
+
+/* ---------------- Hugging Face trendleri (carousel) ---------------- */
+
+/**
+ * Zirvedeki modeller için: kapak başlığı, paylaşım metni ve model başına kısa açıklama; 11 dile çevrilir.
+ * Dönen: {baslik: {dil}, post: {dil}, modeller: {dil: [{etiket, ozet}]}, eksik_dil, model}
+ */
+async function writeHfTrend(env, models, date) {
+  const facts = models
+    .map((m, i) => {
+      const bits = [
+        `#${i + 1} ${m.id}`,
+        m.gorev ? `task: ${m.gorev}` : "",
+        m.boyut ? `size: ${m.boyut}` : "",
+        m.lisans ? `license: ${m.lisans}` : "",
+        m.begeni != null ? `likes: ${m.begeni}` : "",
+        m.indirme != null ? `downloads last month: ${m.indirme}` : "",
+      ].filter(Boolean);
+      const card = String(m.aciklama || "").replace(/\s+/g, " ").slice(0, 1500);
+      return `${bits.join(" | ")}\nModel card excerpt: ${card || "(none)"}`;
+    })
+    .join("\n\n");
+  const n = models.length;
+  const system =
+    "You write a daily Instagram/LinkedIn carousel about the top trending AI models on Hugging Face, for beginners who " +
+    "are curious about AI but are not experts. You get the ranked models with facts and a model card excerpt.\n" +
+    "Return JSON with:\n" +
+    `- "headline": cover title, 4-8 words, e.g. "Today's top ${n} trending AI models".\n` +
+    "- \"post\": the caption under the carousel, 30-50 words, 2-3 short sentences: a hook about today's trend (what kind of " +
+    "models are rising) and an invitation to swipe. No hashtags, emojis or links.\n" +
+    `- "models": exactly ${n} items in the same order, each {"id", "label", "summary"}:\n` +
+    "  - label: 2-3 plain words for what the model does (e.g. \"Image generation\", \"Video from images\", \"Speech model\").\n" +
+    "  - summary: 2 short sentences, max 35 words: what the model does in everyday words and why people may care " +
+    "(size, speed, openness, a standout ability). Explain jargon in plain words.\n" +
+    "Accuracy: use only the given facts and card excerpts. Do not invent benchmarks, numbers, release dates or abilities. " +
+    "If the card says little, describe the task plainly and mention what is known (size, license, popularity).";
+  const user = `Date: ${date || ""}\n\n${facts}`;
+  const schema = {
+    type: "object",
+    properties: {
+      headline: { type: "string" },
+      post: { type: "string" },
+      models: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { id: { type: "string" }, label: { type: "string" }, summary: { type: "string" } },
+          required: ["id", "label", "summary"],
+        },
+      },
+    },
+    required: ["headline", "post", "models"],
+  };
+  const en = parseJsonLoose(
+    await runWriter(env, [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { maxTokens: 1600, schema, temperature: 0.5 })
+  );
+  const enModels = models.map((m, i) => {
+    const found = (en.models || []).find((x) => x && x.id === m.id) || (en.models || [])[i] || {};
+    return { etiket: String(found.label || "").trim().slice(0, 40), ozet: String(found.summary || "").trim().slice(0, 400) };
+  });
+  if (!en.headline || !en.post || enModels.some((m) => !m.ozet)) throw new Error("Trend metni yazılamadı");
+
+  const targets = Object.entries(POST_LANGS).filter(([k]) => k !== "en");
+  const translateSystem =
+    "You are a professional social media translator. You get the English texts of an AI news carousel: a cover headline, " +
+    "a caption and, for each model, a short label and a summary. Translate them into each requested language so they read " +
+    "like a native tech writer's post, in simple, beginner-friendly words and short sentences.\n" +
+    "- Keep the meaning of every sentence; do not add or drop claims. Keep model, company and product names unchanged.\n" +
+    "- The headline and labels are shown in big letters: keep them as short as the English ones (Chinese and Japanese " +
+    "headline at most 16 characters).\n" +
+    "- Keep the same order and number of models.\n" +
+    "Return a JSON object whose keys are the language codes and values are objects " +
+    "{\"title\": ..., \"post\": ..., \"models\": [{\"label\": ..., \"summary\": ...}]}.";
+  const source =
+    `Headline:\n${en.headline}\n\nCaption:\n${en.post}\n\nModels:\n` +
+    enModels.map((m, i) => `${i + 1}. ${models[i].id}\nlabel: ${m.etiket}\nsummary: ${m.ozet}`).join("\n");
+  const translate = async (langs) => {
+    const item = {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        post: { type: "string" },
+        models: {
+          type: "array",
+          items: { type: "object", properties: { label: { type: "string" }, summary: { type: "string" } }, required: ["label", "summary"] },
+        },
+      },
+      required: ["title", "post", "models"],
+    };
+    const schema = { type: "object", properties: Object.fromEntries(langs.map(([k]) => [k, item])), required: langs.map(([k]) => k) };
+    try {
+      const raw = await runWriter(env, [
+        { role: "system", content: translateSystem },
+        { role: "user", content: `Languages: ${langs.map(([k, nm]) => `${k} = ${nm}`).join(", ")}\n\n${source}` },
+      ], { maxTokens: 1400 * langs.length, schema, temperature: 0.2 });
+      return parseJsonLoose(raw);
+    } catch {
+      return {};
+    }
+  };
+  const ok = (v) =>
+    v && typeof v.title === "string" && v.title.trim() && typeof v.post === "string" && v.post.trim().length > 20 &&
+    Array.isArray(v.models) && v.models.length === n && v.models.every((m) => m && String(m.summary || "").trim().length > 10);
+
+  const out = { baslik: { en: en.headline.trim() }, post: { en: en.post.trim() }, modeller: { en: enModels } };
+  const take = (k, v) => {
+    if (!ok(v)) return;
+    out.baslik[k] = v.title.trim().replace(/^["'“”«»「」]+|["'“”«»「」.。]+$/g, "").slice(0, 120);
+    out.post[k] = v.post.trim();
+    out.modeller[k] = v.models.map((m) => ({ etiket: String(m.label || "").trim().slice(0, 40), ozet: String(m.summary).trim().slice(0, 400) }));
+  };
+  const third = Math.ceil(targets.length / 3);
+  const groups = await Promise.all([0, 1, 2].map((i) => translate(targets.slice(i * third, (i + 1) * third))));
+  for (const g of groups) for (const [k, v] of Object.entries(g)) if (POST_LANGS[k]) take(k, v);
+  const retry = targets.filter(([k]) => !out.post[k]);
+  const again = await Promise.all(retry.map((t) => translate([t])));
+  retry.forEach(([k], i) => take(k, again[i][k]));
+  return { ...out, eksik_dil: targets.filter(([k]) => !out.post[k]).map(([k]) => k), model: env.POST_MODEL };
 }
 
 /* ---------------- yardımcılar ---------------- */
