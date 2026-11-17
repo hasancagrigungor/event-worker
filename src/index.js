@@ -1034,7 +1034,8 @@ async function writeSocialPost(env, body) {
 
   const system =
     "You are a sharp AI practitioner who posts on X and LinkedIn. You get a Hacker News title, the post text and the " +
-    "community discussion. Write ONE post in English, 45-75 words, 2-4 short sentences.\n" +
+    "community discussion. Write ONE post in English, 40-65 words and 3 sentences at most (hard limit: 70 words; " +
+    "count them before answering). Short sentences; one idea per sentence.\n" +
     "What a good post does:\n" +
     "- First sentence is a hook that makes people stop scrolling: a surprising fact, a tension or a bold but defensible " +
     "claim. It names the subject (product, company or topic) so the post makes sense without the headline, but it does " +
@@ -1055,11 +1056,27 @@ async function writeSocialPost(env, body) {
     (body.metin ? `\nPost text:\n${String(body.metin).slice(0, 4000)}\n` : "") +
     (commentText ? `\nComments:\n${commentText}` : "\n(No comments yet.)\n");
 
-  const en = await runWriter(env, [
+  let en = await runWriter(env, [
     { role: "system", content: system },
     { role: "user", content: user },
   ], { maxTokens: 600 });
   if (!en || en.length < 30) throw new Error("Post yazılamadı");
+  // Uzun kaldıysa bir kez kısalt (anlamı ve kancayı koruyarak)
+  if (en.split(/\s+/).length > 75) {
+    try {
+      const short = await runWriter(env, [
+        {
+          role: "system",
+          content:
+            "Shorten this social media post to 40-65 words and at most 3 sentences. Keep the hook, the most concrete " +
+            "detail and the closing so-what. Do not add new facts. Output only the post.",
+        },
+        { role: "user", content: en },
+      ], { maxTokens: 400, temperature: 0.3 });
+      const n = short.split(/\s+/).length;
+      if (n >= 25 && n < en.split(/\s+/).length) en = short;
+    } catch {}
+  }
 
   // Kart ve paylaşım için kısa, dikkat çekici başlık (postla tutarlı, abartısız)
   let title = "";
