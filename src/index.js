@@ -1035,7 +1035,12 @@ async function writeSocialPost(env, body) {
   const system =
     "You are a sharp AI practitioner who posts on X and LinkedIn. You get a Hacker News title, the post text and the " +
     "community discussion. Write ONE post in English, 40-65 words and 3 sentences at most (hard limit: 70 words; " +
-    "count them before answering). Short sentences; one idea per sentence.\n" +
+    "count them before answering).\n" +
+    "Audience and language: write for beginners, people who are curious about AI but not experts.\n" +
+    "- Use simple, everyday words and short sentences (ideally under 15 words each), one idea per sentence.\n" +
+    "- Avoid jargon. If a technical term is essential, explain it in a few plain words (e.g. \"BF16, a lighter number " +
+    "format\"). Spell out what a number means in practice (e.g. \"about 1.5 times faster\").\n" +
+    "- A reader with no background must understand what happened and why it matters after one read.\n" +
     "What a good post does:\n" +
     "- First sentence is a hook that makes people stop scrolling: a surprising fact, a tension or a bold but defensible " +
     "claim. It names the subject (product, company or topic) so the post makes sense without the headline, but it does " +
@@ -1048,7 +1053,7 @@ async function writeSocialPost(env, body) {
     "- Use only facts that are in the material. Do not invent numbers, names, dates or events. Ignore jokes, sarcasm, " +
     "insults and off-topic replies, and do not turn one person's guess into a fact; say \"may\" when it is opinion.\n" +
     "- Every sentence must be clear on its own; no vague references like \"this\" or \"they\" without a subject.\n" +
-    "Style: plain words, no clichés (\"game-changer\", \"the real story\", \"here's the thing\", \"buckle up\"), " +
+    "Style: plain, friendly words, no clichés (\"game-changer\", \"the real story\", \"here's the thing\", \"buckle up\"), " +
     "no hashtags, emojis, links, quotes, bullet points or title. Output only the post.";
   const user =
     `Title: ${body.baslik}\n` +
@@ -1069,7 +1074,8 @@ async function writeSocialPost(env, body) {
           role: "system",
           content:
             "Shorten this social media post to 40-65 words and at most 3 sentences. Keep the hook, the most concrete " +
-            "detail and the closing so-what. Do not add new facts. Output only the post.",
+            "detail and the closing so-what. Keep the language simple and beginner-friendly, with short sentences. " +
+            "Do not add new facts. Output only the post.",
         },
         { role: "user", content: en },
       ], { maxTokens: 400, temperature: 0.3 });
@@ -1091,6 +1097,7 @@ async function writeSocialPost(env, body) {
               "You write headlines for image cards on social media about AI and tech. The card shows only the headline in " +
               "big letters, so it must be short and instantly clear. Given a post and the original title, write ONE English " +
               "headline of 4-8 words, max 50 characters.\n" +
+              "- Use simple words a beginner understands; no jargon or abbreviations except product and company names.\n" +
               "- One idea only. Name the subject (product, company or topic) and say what happened or why it matters, with " +
               "a strong verb or a number from the post. No colon-separated two-part headlines, no filler words.\n" +
               "- It must be true to the post: no exaggeration, no claims that are not in the post, no question-bait. Keep " +
@@ -1124,6 +1131,8 @@ async function writeSocialPost(env, body) {
     "- Keep product, company and person names unchanged. Do not leave English words in the translation when the language " +
     "has a common native word (e.g. Turkish \"önem\" not \"relevans\"); keep only established tech terms. Keep the same " +
     "tone and similar length.\n" +
+    "- Keep the language simple and beginner-friendly in every language: short sentences and everyday words, " +
+    "not formal or academic phrasing.\n" +
     "- Each post must be complete; never stop mid-sentence.\n" +
     "Return a JSON object whose keys are the language codes and values are objects {\"title\": ..., \"post\": ...}.";
   const translate = async (langs) => {
