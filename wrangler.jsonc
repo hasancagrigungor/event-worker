@@ -5,7 +5,10 @@
   "compatibility_date": "2025-10-01",
   "observability": { "enabled": true },
   "workers_dev": true,
-  "routes": [{ "pattern": "api.aicalendar.com.tr", "custom_domain": true }],
+  "routes": [
+    { "pattern": "api.aicalendar.com.tr", "custom_domain": true },
+    { "pattern": "api.todai.com.tr", "custom_domain": true }
+  ],
   "ai": { "binding": "AI" },
   "vars": {
     "TEXT_MODEL": "@cf/google/gemma-4-26b-a4b-it",
